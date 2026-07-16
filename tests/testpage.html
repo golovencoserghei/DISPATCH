@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dispatch тест</title>
+  <style>body{font:14px sans-serif;margin:20px}.card{border:1px solid #ccc;padding:8px;margin:6px}.filler{height:2000px}</style>
+</head>
+<body>
+  <h1>Страница для теста Dispatch</h1>
+  <form id="f">
+    <input id="name" placeholder="Имя" />
+    <textarea id="bio" placeholder="О себе"></textarea>
+    <button id="save" type="button" onclick="window.__saved=true;document.title='saved'">Сохранить</button>
+  </form>
+  <nav>
+    <a href="https://example.com/a">Ссылка A</a>
+    <a href="https://example.com/b">Ссылка B</a>
+  </nav>
+  <ul id="list">
+    <li class="card"><h2>Карточка 1</h2><a href="/item/1">открыть 1</a></li>
+    <li class="card"><h2>Карточка 2</h2><a href="/item/2">открыть 2</a></li>
+    <li class="card"><h2>Карточка 3</h2><a href="/item/3">открыть 3</a></li>
+  </ul>
+  <div class="filler"></div>
+  <div id="bottom">низ страницы</div>
+</body>
+</html>

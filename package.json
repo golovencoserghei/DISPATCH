@@ -1,0 +1,17 @@
+{
+  "name": "dispatch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Браузерное расширение + MCP-сервер для управления реальным браузером с живыми сессиями",
+  "scripts": {
+    "postinstall": "npm --prefix mcp-server install",
+    "typecheck": "npm --prefix mcp-server run typecheck",
+    "dev": "npm --prefix mcp-server run dev",
+    "test": "node tests/run.mjs",
+    "test:page": "node tests/page-functions.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}

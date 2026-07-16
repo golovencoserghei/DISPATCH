@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Dispatch",
+  "version": "0.1.0",
+  "description": "Даёт агенту (Claude) контроль над этим браузером через локальный MCP-сервер.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "debugger",
+    "alarms"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Dispatch",
+    "default_popup": "popup.html"
+  }
+}

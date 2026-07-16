@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install (root + mcp-server via postinstall)
+        run: npm install
+      - name: Typecheck MCP server
+        run: npm run typecheck
+      - name: Install Chrome (для page-functions теста)
+        uses: browser-actions/setup-chrome@v1
+        id: chrome
+      - name: Run tests
+        env:
+          DISPATCH_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: npm test

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { width: 320px; margin: 0; padding: 12px 14px; font: 13px/1.4 system-ui, sans-serif; }
+    h1 { font-size: 15px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #b33; }
+    .dot.on { background: #2c8a3d; }
+    .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; }
+    .muted { opacity: 0.65; font-size: 12px; }
+    button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #8886; background: #7773; cursor: pointer; }
+    button:hover { background: #7775; }
+    .granted { font-weight: 600; word-break: break-word; }
+    textarea { width: 100%; box-sizing: border-box; height: 48px; resize: vertical; font: 12px monospace; }
+    input[type=number] { width: 70px; }
+    hr { border: none; border-top: 1px solid #8884; margin: 10px 0; }
+    .log { background: #7772; border-radius: 6px; padding: 6px 8px; max-height: 130px; overflow: auto; font: 11px/1.5 monospace; white-space: pre-wrap; }
+    label.sw { position: relative; display: inline-block; width: 40px; height: 22px; }
+    label.sw input { display: none; }
+    .slider { position: absolute; inset: 0; background: #9994; border-radius: 22px; transition: .2s; }
+    .slider::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+    input:checked + .slider { background: #2c8a3d; }
+    input:checked + .slider::before { transform: translateX(18px); }
+  </style>
+</head>
+<body>
+  <h1><span id="dot" class="dot"></span> Dispatch</h1>
+
+  <div class="row">
+    <span>Мастер-тумблер</span>
+    <label class="sw"><input type="checkbox" id="enabled" /><span class="slider"></span></label>
+  </div>
+  <div class="row muted"><span id="conn">не подключено</span></div>
+  <div class="row">
+    <span>Режим доступа</span>
+    <select id="mode">
+      <option value="full">Полный</option>
+      <option value="readonly">Только чтение</option>
+    </select>
+  </div>
+  <div class="muted" style="font-size:11px">read-only блокирует навигацию, клики, ввод и eval. Всё, что видит вкладка с доступом, уходит агенту.</div>
+
+  <hr />
+
+  <div class="row">
+    <span>Доступ к вкладке</span>
+    <button id="revokeAccess" title="Забрать доступ">✕</button>
+  </div>
+  <div class="granted muted" id="granted">— нет —</div>
+  <div class="row"><button id="grant">Дать доступ к этой вкладке</button></div>
+
+  <hr />
+
+  <div class="row"><span>Порт сервера</span><input type="number" id="port" min="1" max="65535" /></div>
+  <div class="row"><span>Токен</span><input type="password" id="token" placeholder="если сервер требует" style="width:150px" /></div>
+  <div class="muted">Allowlist хостов (по строке; пусто = любой):</div>
+  <textarea id="allowlist" placeholder="example.com&#10;*.mydomain.dev"></textarea>
+  <div class="row"><button id="reconnect">Переподключить</button></div>
+
+  <hr />
+  <div class="row">
+    <span id="dbg" class="muted">Перехват: выкл</span>
+    <button id="stopdbg" style="display:none">Стоп отладки</button>
+  </div>
+
+  <hr />
+  <div class="muted">Лог</div>
+  <div class="log" id="log"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

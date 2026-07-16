@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.icode/
+
+# артефакты тестов
+tests/.chrome-prof/
+tests/**/.stage3-shot.png
+tests/**/.playlist.json
