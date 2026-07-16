@@ -145,6 +145,46 @@ export function pageExtract(container, fields, multiple) {
   }
 }
 
+/**
+ * Шильдик «эта вкладка под контролем агента»: маленькая плашка в правом нижнем
+ * углу. mode = "full" | "readonly", либо null — снять шильдик.
+ * Живёт в Shadow DOM (стили страницы его не трогают, и он не мусорит в
+ * get_html), не ловит мышь (pointer-events:none) и не попадает в snapshot —
+ * поэтому агенту не мешает.
+ */
+export function pageShield(mode) {
+  const ID = "__dispatch_shield__";
+  const old = document.getElementById(ID);
+  if (!mode) { old?.remove(); return { ok: true, shield: false }; }
+  if (!document.body) return { ok: true, shield: false, note: "нет body" };
+
+  const host = old || document.createElement("div");
+  if (!old) {
+    host.id = ID;
+    host.setAttribute("data-dispatch-shield", "");
+    host.attachShadow({ mode: "open" });
+    (document.body || document.documentElement).appendChild(host);
+  }
+  const full = mode !== "readonly";
+  host.shadowRoot.innerHTML = `
+    <style>
+      :host { all: initial; }
+      .s {
+        position: fixed; right: 10px; bottom: 10px; z-index: 2147483647;
+        display: flex; align-items: center; gap: 6px;
+        padding: 4px 9px; border-radius: 999px;
+        font: 500 11px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: #fff; background: ${full ? "rgba(28,110,50,.92)" : "rgba(60,70,85,.92)"};
+        box-shadow: 0 2px 8px rgba(0,0,0,.28);
+        pointer-events: none; user-select: none;
+      }
+      .d { width: 7px; height: 7px; border-radius: 50%; background: ${full ? "#7ee08a" : "#aab4c4"}; }
+    </style>
+    <div class="s"><span class="d"></span>Dispatch · ${full ? "полный доступ" : "только чтение"}</div>
+  `;
+  return { ok: true, shield: true, mode: full ? "full" : "readonly" };
+}
+
 export function pageScroll(selector, dx, dy, toBottom) {
   const el = selector ? document.querySelector(selector) : (document.scrollingElement || document.documentElement);
   if (!el) return { ok: false, error: "элемент прокрутки не найден" };

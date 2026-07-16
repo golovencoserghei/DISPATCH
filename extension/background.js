@@ -22,6 +22,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => d.onTabRemoved(tabId));
+chrome.tabs.onUpdated.addListener((tabId, info) => d.onTabUpdated(tabId, info));
 
 // Резервный путь на случай выгрузки service worker'а.
 chrome.alarms.create("dispatch-keepalive", { periodInMinutes: 0.4 });

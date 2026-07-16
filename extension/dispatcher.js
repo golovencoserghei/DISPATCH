@@ -10,7 +10,7 @@
 
 import {
   pageSnapshot, pageGetHtml, pageEval, pageFocus,
-  pageClick, pageType, pageWaitFor, pageExtract, pageScroll,
+  pageClick, pageType, pageWaitFor, pageExtract, pageScroll, pageShield,
 } from "./page.js";
 import { methodAllowed, hostAllowed, urlAllowed, hostOf, parseRef } from "./policy.js";
 
@@ -246,13 +246,32 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     return tab;
   }
 
+  // ── шильдик на странице: видно, какая вкладка под контролем ────────────────
+  // Бейдж на иконке виден только рядом с иконкой; шильдик показывает это прямо
+  // на самой странице, чтобы вкладку под агентом нельзя было спутать.
+  async function paintShield(tabId, mode) {
+    if (tabId == null) return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!isInjectable(tab.url)) return; // на служебных страницах скрипты запрещены
+      await chrome.scripting.executeScript({
+        target: { tabId }, world: "ISOLATED", func: pageShield, args: [mode],
+      });
+    } catch { /* вкладка закрыта или недоступна — шильдик не критичен */ }
+  }
+  const showShield = (tabId) => paintShield(tabId, state.mode);
+  const hideShield = (tabId) => paintShield(tabId, null);
+
   /** Сменить вкладку с доступом; закрыть debug-сессию, если она на другой вкладке. */
   async function grantAccess(tab) {
     if (dbg.attached && dbg.tabId !== tab.id) await releasePersistent();
+    const prev = state.grantedTabId;
     state.grantedTabId = tab.id;
     state.grantedTitle = tab.title || "";
     saveSettings();
     updateBadge();
+    if (prev != null && prev !== tab.id) await hideShield(prev);
+    await showShield(tab.id);
   }
 
   function requireInjectable(tab) {
@@ -745,8 +764,8 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       case "setEnabled":
         state.enabled = !!msg.value;
         saveSettings();
-        if (state.enabled) connect();
-        else await disconnect(); // выключенный тумблер = связи нет вообще
+        if (state.enabled) { connect(); await showShield(state.grantedTabId); }
+        else { await disconnect(); await hideShield(state.grantedTabId); } // выключен = связи нет и шильдика тоже
         pushLog(state.enabled ? "включено" : "выключено");
         updateBadge();
         return { ok: true };
@@ -766,6 +785,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         state.mode = msg.value === "readonly" ? "readonly" : "full";
         saveSettings();
         pushLog(`режим: ${state.mode}`);
+        if (state.enabled) await showShield(state.grantedTabId); // перерисовать под новый режим
         return { ok: true };
       case "grantActive": {
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -774,14 +794,17 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         pushLog(`доступ выдан: ${tab.title}`);
         return { ok: true, grantedTabId: tab.id, grantedTitle: tab.title };
       }
-      case "revokeAccess":
+      case "revokeAccess": {
         if (dbg.attached) await releasePersistent();
+        const was = state.grantedTabId;
         state.grantedTabId = null;
         state.grantedTitle = "";
         saveSettings();
         pushLog("доступ забран");
         updateBadge();
+        await hideShield(was);
         return { ok: true };
+      }
       case "stopDebug":
         await releasePersistent();
         pushLog("перехват остановлен из popup");
@@ -810,6 +833,14 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     updateBadge();
   }
 
+  /** Навигация стирает шильдик вместе со старым документом — рисуем заново. */
+  function onTabUpdated(tabId, info) {
+    if (!state.enabled) return;
+    if (tabId !== state.grantedTabId) return;
+    if (info.status !== "complete") return;
+    showShield(tabId);
+  }
+
   /** Резервный путь: alarm поднимает связь, если service worker выгружали. */
   function onKeepalive() {
     if (state.enabled && !state.connected) connect();
@@ -818,13 +849,13 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   async function init() {
     await loadSettings();
     updateBadge();
-    if (state.enabled) connect();
+    if (state.enabled) { connect(); showShield(state.grantedTabId); }
     pushLog("service worker запущен");
   }
 
   return {
     state, dbg, handlers,
     init, connect, disconnect, onMessage, handlePopup,
-    handleCdpEvent, onCdpDetach, onTabRemoved, onKeepalive,
+    handleCdpEvent, onCdpDetach, onTabRemoved, onTabUpdated, onKeepalive,
   };
 }

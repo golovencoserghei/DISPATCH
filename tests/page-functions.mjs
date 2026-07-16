@@ -79,6 +79,22 @@ async function main() {
   t.check("scroll toBottom", (await cdp.run(page.pageScroll, [null, 0, 0, true])).scrollTop > 100);
   t.check("wait_for нашёл #bottom", (await cdp.run(page.pageWaitFor, ["#bottom", 3000])).found === true);
 
+  // шильдик: рисуется, живёт в Shadow DOM, не ловит мышь, не лезет в снимок
+  const sh = await cdp.run(page.pageShield, ["full"]);
+  t.check("шильдик нарисован", sh.ok && sh.shield === true && sh.mode === "full", sh);
+  t.check("шильдик в Shadow DOM с текстом режима",
+    (await cdp.run(page.pageEval, ["document.getElementById('__dispatch_shield__').shadowRoot.textContent.trim()"])).json.includes("полный доступ"));
+  const snapWithShield = await cdp.run(page.pageSnapshot);
+  t.check("шильдик не попадает в snapshot", snapWithShield.count === snap.count, { было: snap.count, стало: snapWithShield.count });
+  t.check("шильдик не перехватывает клики (pointer-events:none)",
+    (await cdp.run(page.pageEval, ["(()=>{const s=document.getElementById('__dispatch_shield__').getBoundingClientRect();const el=document.elementFromPoint(innerWidth-20, innerHeight-20);return el && el.id !== '__dispatch_shield__';})()"])).json === "true");
+  t.check("шильдик идемпотентен (повторный вызов не плодит копии)",
+    (await cdp.run(page.pageShield, ["readonly"])).ok &&
+    (await cdp.run(page.pageEval, ["document.querySelectorAll('[data-dispatch-shield]').length"])).json === "1");
+  await cdp.run(page.pageShield, [null]);
+  t.check("шильдик снимается",
+    (await cdp.run(page.pageEval, ["document.getElementById('__dispatch_shield__')===null"])).json === "true");
+
   const metrics = await cdp.send("Page.getLayoutMetrics");
   const size = metrics.cssContentSize || metrics.contentSize;
   const shot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { x: 0, y: 0, width: Math.ceil(size.width), height: Math.ceil(size.height), scale: 1 } });

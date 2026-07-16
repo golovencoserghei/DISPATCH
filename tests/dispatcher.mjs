@@ -179,4 +179,65 @@ const t = checker("\n▶ dispatcher: ядро на моках chrome");
   await d.handlePopup({ type: "setEnabled", value: false }); // не оставлять таймер
 }
 
+// ── 12. Шильдик на вкладке с доступом ────────────────────────────────────────
+{
+  const shields = (chrome) => chrome._calls.executeScript.filter((c) => c.func?.name === "pageShield");
+  const lastMode = (chrome) => shields(chrome).at(-1)?.args?.[0];
+
+  const { d, ws, chrome } = await boot(createDispatcher, { tabs: TABS });
+  await cmd(d, ws, "select_tab", { tabId: 1 });
+  t.check("выдача доступа рисует шильдик на вкладке", shields(chrome).at(-1)?.target?.tabId === 1);
+  t.check("шильдик знает режим (полный доступ)", lastMode(chrome) === "full");
+
+  // переезд доступа: со старой вкладки снять, на новой — нарисовать
+  const before = shields(chrome).length;
+  await cmd(d, ws, "select_tab", { tabId: 2 });
+  const moves = shields(chrome).slice(before);
+  t.check("со старой вкладки шильдик снят", moves.some((c) => c.target.tabId === 1 && c.args[0] === null));
+  t.check("на новой вкладке шильдик нарисован", moves.some((c) => c.target.tabId === 2 && c.args[0] === "full"));
+
+  await d.handlePopup({ type: "setMode", value: "readonly" });
+  t.check("смена режима перерисовывает шильдик", lastMode(chrome) === "readonly");
+
+  await d.handlePopup({ type: "revokeAccess" });
+  t.check("отзыв доступа убирает шильдик", lastMode(chrome) === null);
+}
+
+// ── 13. Шильдик следует за состоянием тумблера и навигацией ──────────────────
+{
+  const shields = (chrome) => chrome._calls.executeScript.filter((c) => c.func?.name === "pageShield");
+  const { d, chrome } = await boot(createDispatcher, { tabs: TABS, storage: { grantedTabId: 1 } });
+
+  await d.handlePopup({ type: "setEnabled", value: false });
+  t.check("выключенный тумблер убирает шильдик (агент не действует — плашки нет)",
+    shields(chrome).at(-1)?.args?.[0] === null);
+
+  await d.handlePopup({ type: "setEnabled", value: true });
+  t.check("включённый тумблер возвращает шильдик", shields(chrome).at(-1)?.args?.[0] === "full");
+
+  const before = shields(chrome).length;
+  d.onTabUpdated(1, { status: "complete" }); // навигация стёрла плашку вместе с документом
+  await wait(10);
+  t.check("после навигации шильдик рисуется заново", shields(chrome).length > before);
+
+  const n = shields(chrome).length;
+  d.onTabUpdated(2, { status: "complete" });   // чужая вкладка
+  d.onTabUpdated(1, { status: "loading" });    // ещё не догрузилась
+  await wait(10);
+  t.check("чужая вкладка и недогруженная страница шильдик не трогают", shields(chrome).length === n);
+  await d.handlePopup({ type: "setEnabled", value: false });
+}
+
+// ── 14. Шильдик не мешает агенту ─────────────────────────────────────────────
+{
+  // Плашка не должна попадать в снимок: она не интерактивна и висит в Shadow DOM.
+  const { pageShield, pageSnapshot } = await import("../extension/page.js");
+  t.check("pageShield(null) — снятие без падения на пустой странице",
+    typeof pageShield === "function" && typeof pageSnapshot === "function");
+  const src = pageShield.toString();
+  t.check("шильдик не ловит мышь (pointer-events:none)", /pointer-events:\s*none/.test(src));
+  t.check("шильдик изолирован в Shadow DOM", /attachShadow/.test(src));
+  t.check("шильдик поверх всего (z-index)", /z-index:\s*2147483647/.test(src));
+}
+
 process.exit(t.done("dispatcher") ? 0 : 1);
