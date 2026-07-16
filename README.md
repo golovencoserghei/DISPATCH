@@ -13,10 +13,15 @@ mcp-server (Node/TS)  ── поднимает ws://127.0.0.1:8765
    ▲
    │  WebSocket
    ▼
-extension (MV3)  ── background: диспетчер команд
-                    chrome.scripting: DOM / eval
-                    chrome.debugger (CDP): full-page скрин (по запросу)
+extension (MV3)  ── background.js: обвязка (даёт ядру настоящий chrome)
+                    dispatcher.js: ядро — связь, гейт доступа, команды, CDP
+                    policy.js:     чистые правила доступа
+                    page.js:       функции, исполняемые внутри страницы
 ```
+
+Ядро не трогает глобальные `chrome`/`WebSocket` — они приходят фасадом в
+`createDispatcher()`. Поэтому вся логика (гейт тумблера, allowlist, границы
+команд, очередь CDP) тестируется в Node на моках, без браузера.
 
 ## Инструменты
 
@@ -144,17 +149,33 @@ npm run dev        # поднимет WS на 127.0.0.1:8765
 ```bash
 npm install     # ставит корневые зависимости + mcp-server (postinstall)
 npm run typecheck
-npm test        # policy + smoke + security + page-functions (последний — если найден Chrome)
+npm test        # policy + dispatcher + smoke + security + page-functions
 ```
 
-- **policy** — модель доступа: read-only, allowlist (хосты, порты, поддомены), парсинг ref.
+- **policy** — правила доступа: read-only, allowlist (хосты, порты, поддомены), парсинг ref.
+- **dispatcher** — ядро расширения на моках `chrome.*`: гейт мастер-тумблера,
+  границы `close_tab`/`select_tab`, allowlist на живых вкладках, очередь CDP,
+  буферы перехвата, реконнект.
 - **smoke** — MCP-хендшейк, список инструментов, request/response через WS (фейковое расширение).
 - **security** — origin-check, ready-гейт, токен, обрыв связи не подвешивает команду.
 - **page-functions** — логика `extension/page.js` на живом headless-Chrome через CDP
   (тот же механизм, что `chrome.scripting.executeScript({func})`). Бинарь Chrome можно
-  задать через `DISPATCH_CHROME`.
+  задать через `DISPATCH_CHROME`; без Chrome набор пропускается.
 - **tests/manual/** — прогоны на РЕАЛЬНОМ браузере (`stage3.mjs` — все инструменты;
   `playlist-export.mjs` — пример сбора данных). Не для CI.
+
+### Почему настоящее расширение не гоняется в автотесте
+
+Chrome 137+ **намеренно игнорирует `--load-extension`, когда включён удалённый
+отладчик** (`--remote-debugging-port` или `--remote-debugging-pipe`) — иначе malware
+цепляло бы CDP к чужому браузеру ровно так, как это делает Dispatch. Обойти нельзя:
+ни headless, ни headful, ни `--disable-features=DisableLoadExtensionCommandLineSwitch`,
+ни `--enable-unsafe-extension-debugging` защиту не снимают (проверено на Chrome 149).
+
+Поэтому логика расширения вынесена в `dispatcher.js` за фасад `chrome` и покрыта
+`tests/dispatcher.mjs` на моках, а `page.js` проверяется на живом Chrome тем же
+механизмом, каким его исполняет `chrome.scripting`. Непокрытым остаётся лишь тонкий
+слой `background.js` (проброс настоящего API) — его смотрит `tests/manual/stage3.mjs`.
 
 CI: [.github/workflows/ci.yml](.github/workflows/ci.yml) — typecheck + весь автономный набор.
 

@@ -9,7 +9,7 @@ const run = (file) => new Promise((res) => spawn("node", [dir + file], { stdio: 
 const chromeBin = process.env.DISPATCH_CHROME || "google-chrome";
 const hasChrome = spawnSync("which", [chromeBin]).status === 0;
 
-const suite = ["policy.mjs", "smoke.mjs", "security.mjs"];
+const suite = ["policy.mjs", "dispatcher.mjs", "smoke.mjs", "security.mjs"];
 if (hasChrome) suite.push("page-functions.mjs");
 else console.log(`(page-functions пропущен — не найден ${chromeBin}; задай $DISPATCH_CHROME)`);
 
