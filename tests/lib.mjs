@@ -87,7 +87,15 @@ export function checker(title) {
   return {
     check(name, cond, extra) {
       if (cond) { pass++; console.log(`  ✓ ${name}`); }
-      else { fail++; console.log(`  ✗ ${name}`, extra ?? ""); }
+      else {
+        fail++;
+        console.log(`  ✗ ${name}`, extra ?? "");
+        // In GitHub Actions a failed check also becomes an annotation, readable without log access.
+        if (process.env.GITHUB_ACTIONS) {
+          const detail = typeof extra === "string" ? extra : JSON.stringify(extra ?? "");
+          console.log(`::error title=${title?.trim().replace(/^▶\s*/, "")}::${name} ${String(detail).slice(0, 300).replace(/\n/g, " ")}`);
+        }
+      }
     },
     done(label) {
       console.log(`${fail === 0 ? "✅" : "❌"} ${label || "total"}: ${pass} passed, ${fail} failed`);

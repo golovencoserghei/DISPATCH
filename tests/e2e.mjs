@@ -161,6 +161,9 @@ async function main() {
 
 let ok = false;
 try { await main(); ok = t.done("e2e"); }
-catch (e) { console.error("e2e crashed:", e); }
+catch (e) {
+  console.error("e2e crashed:", e);
+  if (process.env.GITHUB_ACTIONS) console.log(`::error title=e2e::crashed: ${String(e && e.stack || e).slice(0, 300).replace(/\n/g, " ")}`);
+}
 finally { cleanup(); }
 process.exit(ok ? 0 : 1);
