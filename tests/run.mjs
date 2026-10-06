@@ -4,7 +4,22 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const dir = fileURLToPath(new URL(".", import.meta.url));
-const run = (file) => new Promise((res) => spawn("node", [dir + file], { stdio: "inherit" }).on("close", res));
+// Output is passed through as is; the tail is kept so that a suite that dies
+// before any check (no ✗ to annotate) still says why in GitHub Actions.
+const run = (file) => new Promise((res) => {
+  const p = spawn("node", [dir + file], { stdio: ["ignore", "pipe", "pipe"] });
+  let tail = "";
+  const keep = (stream, out) => stream.on("data", (d) => { out.write(d); tail = (tail + d).slice(-1500); });
+  keep(p.stdout, process.stdout);
+  keep(p.stderr, process.stderr);
+  p.on("close", (code) => {
+    if (code !== 0 && process.env.GITHUB_ACTIONS) {
+      const last = tail.split("\n").filter((l) => l.trim() && !l.startsWith("::")).slice(-12).join(" ⏎ ");
+      console.log(`::error title=${file} exited with ${code}::${last.slice(0, 1200)}`);
+    }
+    res(code);
+  });
+});
 
 const chromeBin = process.env.DISPATCH_CHROME || "google-chrome";
 const hasChrome = spawnSync("which", [chromeBin]).status === 0;
