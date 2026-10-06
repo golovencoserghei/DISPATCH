@@ -77,14 +77,18 @@ async function popupSend(extId, messages) {
   });
   // The page may still be loading (slower with a visible browser): retry until
   // chrome.runtime is there and the worker answers.
+  const replies = [];
   for (const m of messages) {
+    let r;
     for (let i = 0; i < 40; i++) {
-      const r = await evaluate(`chrome.runtime.sendMessage(${JSON.stringify(m)})`);
+      r = await evaluate(`chrome.runtime.sendMessage(${JSON.stringify(m)})`);
       if (r && !r.exceptionDetails && r.result?.value?.ok) break;
       await wait(250);
     }
+    replies.push(r?.result?.value ?? r?.exceptionDetails?.exception?.description ?? r);
   }
   ws.close();
+  return replies;
 }
 
 async function main() {
@@ -98,14 +102,22 @@ async function main() {
   }
   t.check("extension loaded", !!extId);
   await srv.initialize();
-  await popupSend(extId, [{ type: "setPort", value: MCP_PORT }, { type: "setEnabled", value: true }]);
+  const setup = await popupSend(extId, [{ type: "setPort", value: MCP_PORT }, { type: "setEnabled", value: true }]);
   let status;
   for (let i = 0; i < 30; i++) {
     status = await srv.callTool("browser_status");
     if (status.ok && /"connected": true/.test(status.text)) break;
     await wait(300);
   }
-  t.check("extension connected to the server", status.ok && /"connected": true/.test(status.text), status.text);
+  const connected = status.ok && /"connected": true/.test(status.text);
+  if (!connected) {
+    // Say why: browser build, what the popup messages got back, the extension's own log.
+    const version = (await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)).json()).Browser;
+    const [st] = await popupSend(extId, [{ type: "getState" }]);
+    console.log("diagnostics:", JSON.stringify({ version, setup, log: st?.log, enabled: st?.enabled, port: st?.port }));
+    if (process.env.GITHUB_ACTIONS) console.log(`::error title=e2e diagnostics::${JSON.stringify({ version, setup, log: st?.log?.slice(0, 8), enabled: st?.enabled, port: st?.port }).slice(0, 900)}`);
+  }
+  t.check("extension connected to the server", connected, status.text);
 
   const open = await srv.callTool("browser_open_tab", { url: pageUrl, active: !BACKGROUND });
   t.check("opened and granted the test page", open.ok, open.text);
