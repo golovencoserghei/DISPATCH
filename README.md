@@ -122,6 +122,63 @@ once (e.g. *“compare pricing on these three tabs”*).
   facade and runs in Node against mocks; page functions run against headless
   Chrome in CI.
 
+## How it compares
+
+There are good tools in this space. Here's where Dispatch sits, honestly —
+including where others are ahead. Checked against each project's docs and
+source on **2026-10-06**; corrections welcome via issue or PR.
+
+✅ yes · ⚠️ partial · ❌ no · — not documented
+
+| | **Dispatch** | [Chrome DevTools MCP][cdm] `--autoConnect` | [Playwright MCP][pwm] `--extension` | [mcp-chrome][mcc] | [Browser MCP][bmc] | [Claude in Chrome][cic] |
+|---|---|---|---|---|---|---|
+| GitHub stars | new | ~53k | ~38k | ~12.5k | ~7.2k | closed source |
+| License | MIT | Apache-2.0 | Apache-2.0 | MIT | Apache-2.0, extension closed | proprietary |
+| Last commit | Oct 2026 | Oct 2026 | Sep 2026 | Jan 2026 | Apr 2025 | — |
+| Works with any MCP client | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ Claude apps, paid plans |
+| Attaches via | extension | CDP remote debugging | extension | extension + native host | extension | extension |
+| **Host allowlist** | ✅ enforced, per iframe, re-checked on capture reads | ✅ URL patterns ¹ | ⚠️ origin filter, “not a security boundary” | ❌ | — | ⚠️ admins only (Team/Enterprise) + built-in blocked categories |
+| **Read-only mode** | ✅ one switch | ⚠️ disable tool categories via flags | ❌ | ❌ | — | — |
+| **Per-action approval** | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Kill switch in the UI** | ✅ | ⚠️ turn off remote debugging | ⚠️ disconnect per client | ⚠️ connect/disconnect | ⚠️ connect/disconnect | — |
+| **Visible marker** | on-page badge on every reachable tab | Chrome automation banner | tab group + icon badge | Chrome debugging banner | Chrome debugging banner | tab group |
+| Tabs the agent can reach | granted tabs; it can add others ⁴, only on allowlisted hosts if a list is set | all tabs of the profile | picked tab group ² | any tab | one connected tab | its tab group |
+| Local transport protection | origin allowlist + optional token | Chrome consent dialog per session | consent dialog or token, Host/Origin checks | 127.0.0.1, no auth | all interfaces, no auth ³ | native messaging |
+| Network capture with response bodies | ✅ | ✅ | ✅ | ✅ | ❌ | ⚠️ requests |
+| Console logs | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Full-page screenshots | ✅ | ✅ | ✅ | ✅ | ❌ visible area | — |
+| Device emulation | ✅ device, viewport, UA, geo | ✅ + CPU/network throttling | ⚠️ media, resize | ⚠️ viewport | ❌ | — |
+| Hover, drag, file upload, dialogs | ❌ | ✅ | ✅ | ✅ | ⚠️ hover | ⚠️ upload |
+| Performance traces / Lighthouse | ❌ | ✅ | ⚠️ Playwright traces | ⚠️ perf traces | ❌ | — |
+| Tools | 22 | 59 incl. opt-in | 25 (72 with `--caps`) | 27 | 12 | — |
+| Chrome Web Store | soon | no extension | ✅ | ❌ unpacked only | ✅ | ✅ |
+| Telemetry | none | usage stats on by default (opt-out) | — | — | anonymous analytics per tool call | — |
+
+¹ Allowlist patterns need Chrome 149+.<br>
+² The extension's relay doesn't check
+that commands target tabs in the group; its own connect dialog warns it
+“exposes the entire browser”.<br>
+³ [Issue #158][bmc158], closed as not planned.<br>
+⁴ Via `browser_select_tab` / `browser_open_tab` — see [Access model](#access-model-in-detail).
+
+**Pick Dispatch** if you want to leave an agent connected to your everyday
+browser and need hard, visible limits: an allowlist that also covers iframes
+and captured traffic, a read-only switch, a badge on every tab the agent can
+touch, and a kill switch — with any MCP client, in ~2k lines you can audit.
+
+**Pick something else** if you need per-action approval (Claude in Chrome),
+deep performance work — traces, Lighthouse, heap snapshots (Chrome DevTools
+MCP), test generation, tracing/video and mocking (Playwright MCP), or richer
+input actions (DevTools MCP, Playwright MCP, mcp-chrome). Dispatch doesn't yet
+do hover, drag-and-drop, file upload or JS dialogs.
+
+[cdm]: https://github.com/ChromeDevTools/chrome-devtools-mcp
+[pwm]: https://github.com/microsoft/playwright-mcp
+[mcc]: https://github.com/hangwin/mcp-chrome
+[bmc]: https://github.com/BrowserMCP/mcp
+[bmc158]: https://github.com/BrowserMCP/mcp/issues/158
+[cic]: https://support.claude.com/en/articles/12012173-get-started-with-claude-in-chrome
+
 ## Access model in detail
 
 There are exactly two hard boundaries: the **master switch** and the
