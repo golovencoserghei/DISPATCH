@@ -62,7 +62,15 @@ const browser = spawn(BROWSER, [
 const srv = startServer({ port: MCP_PORT });
 const t = checker(`\n▶ e2e: real extension + server + page${BACKGROUND ? " (agent tab in the background)" : ""}`);
 
-function cleanup() { srv.close(); browser.kill(); http.close(); rmSync(tmp, { recursive: true, force: true }); }
+async function cleanup() {
+  srv.close(); http.close();
+  // Chrome keeps writing its profile for a moment after the signal: wait for
+  // it to exit, and don't fail the run over a temp dir.
+  const exited = new Promise((r) => browser.once("exit", r));
+  browser.kill();
+  await Promise.race([exited, wait(5000)]);
+  try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* temp dir, OS cleans it */ }
+}
 
 /** One CDP command over a fresh connection to a target. */
 async function cdp(url, method, params) {
@@ -189,5 +197,5 @@ catch (e) {
   console.error("e2e crashed:", e);
   if (process.env.GITHUB_ACTIONS) console.log(`::error title=e2e::crashed: ${String(e && e.stack || e).slice(0, 300).replace(/\n/g, " ")}`);
 }
-finally { cleanup(); }
+finally { await cleanup(); }
 process.exit(ok ? 0 : 1);
