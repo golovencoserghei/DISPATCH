@@ -455,4 +455,119 @@ const t = checker("\n▶ dispatcher: core on chrome mocks");
   t.check("and the previous current tab keeps access", d3.state.grantedTabs.includes(1));
 }
 
+// ── 16. JS dialogs: answered when armed, reported when not ───────────────────
+{
+  const sends = (chrome, method) => chrome._calls.debugger.filter((c) => c.op === "send" && c.method === method);
+  let d;
+  const booted = await boot(createDispatcher, {
+    tabs: TABS, storage: { grantedTabs: [1], grantedTabId: 1 },
+    // The click opens a confirm: the core hears about it via CDP while the script "runs".
+    scriptResult: (opts) => {
+      if (opts.func.name === "pageClick") d.handleCdpEvent({ tabId: 1 }, "Page.javascriptDialogOpening", { type: "confirm", message: "Delete item?" });
+      return { ok: true, clicked: "Delete" };
+    },
+  });
+  d = booted.d;
+  const { ws, chrome } = booted;
+  const r = await cmd(d, ws, "click", { selector: "#del", dialog: "accept" });
+  t.check("armed click succeeds", r.ok === true, r);
+  t.check("Page enabled BEFORE the click (otherwise CDP never sees the dialog)",
+    chrome._calls.debugger.findIndex((c) => c.method === "Page.enable") >= 0);
+  const h = sends(chrome, "Page.handleJavaScriptDialog");
+  t.check("dialog answered as asked", h.length === 1 && h[0].params.accept === true, h);
+  t.check("agent sees what the dialog said", r.result.dialog?.message === "Delete item?" && r.result.dialog?.type === "confirm", r.result);
+  t.check("session closed after the armed action", !chrome._attached.has(1));
+
+  const r2 = await cmd(d, ws, "click", { selector: "#x" });
+  t.check("unarmed click opens no CDP session (no banner on every click)",
+    sends(chrome, "Page.enable").length === 1 && r2.ok === true);
+
+  const bad = await cmd(d, ws, "click", { selector: "#x", dialog: "maybe" });
+  t.check("unknown dialog answer rejected", bad.ok === false && /accept.*dismiss/.test(bad.error), bad);
+}
+{
+  // A page frozen by a dialog nobody armed for: neither the command nor the probe answers.
+  const { d, ws } = await boot(createDispatcher, {
+    tabs: TABS, storage: { grantedTabs: [1], grantedTabId: 1 },
+    scriptResult: () => new Promise(() => {}),
+  });
+  const t0 = Date.now();
+  const r = await cmd(d, ws, "get_html", {});
+  t.check("frozen page → clear error mentioning the dialog", r.ok === false && /dialog/i.test(r.error), r);
+  t.check("…in seconds, not the 30 s server timeout", Date.now() - t0 < 6000, Date.now() - t0);
+}
+{
+  // A slow but alive page (wait_for polling): the probe answers, the command keeps waiting.
+  let calls = 0;
+  const { d, ws } = await boot(createDispatcher, {
+    tabs: TABS, storage: { grantedTabs: [1], grantedTabId: 1 },
+    scriptResult: (opts) => opts.func.name === "pageWaitFor"
+      ? (calls++, wait(2600).then(() => ({ ok: true, found: true })))
+      : { ok: true, url: "https://example.com/a" },
+  });
+  const r = await cmd(d, ws, "wait_for", { selector: "#late" });
+  t.check("slow but responsive page is not mistaken for a frozen one", r.ok === true && calls === 1, r);
+}
+
+// ── 17. hover / drag / upload_file ───────────────────────────────────────────
+{
+  const point = (opts) => {
+    const [ref, sel] = opts.args || [];
+    if (opts.func.name === "pagePoint") return { ok: true, x: sel === "#dst" ? 300 : 100, y: 50, inViewport: true, name: sel || ref };
+    return { ok: true };
+  };
+  let d;
+  const booted = await boot(createDispatcher, {
+    tabs: TABS, storage: { grantedTabs: [1], grantedTabId: 1 },
+    scriptResult: point,
+    // The page starts an HTML5 drag once the pressed mouse moves.
+    cdpHook: (tabId, method, params) => {
+      if (method === "Input.dispatchMouseEvent" && params.type === "mouseMoved" && params.buttons === 1) {
+        d.handleCdpEvent({ tabId }, "Input.dragIntercepted", { data: { items: [], dragOperationsMask: 1 } });
+      }
+    },
+  });
+  d = booted.d;
+  const { ws, chrome } = booted;
+  const sent = (m) => chrome._calls.debugger.filter((c) => c.op === "send" && c.method === m).map((c) => c.params);
+
+  const hv = await cmd(d, ws, "hover", { selector: "#menu" });
+  const mv = sent("Input.dispatchMouseEvent");
+  t.check("hover moves the real mouse to the element center",
+    hv.ok === true && mv.length === 1 && mv[0].type === "mouseMoved" && mv[0].x === 100, { hv, mv });
+  t.check("hover detaches afterwards", !chrome._attached.has(1));
+  const inFrame = await cmd(d, ws, "hover", { ref: "3:e1" });
+  t.check("hover into a nested frame rejected (top frame only)", inFrame.ok === false && /top frame/.test(inFrame.error), inFrame);
+
+  const dr = await cmd(d, ws, "drag", { fromSelector: "#src", toSelector: "#dst" });
+  const types = sent("Input.dispatchMouseEvent").slice(1).map((p) => p.type);
+  t.check("drag = press, moves, release", dr.ok === true && types[1] === "mousePressed" && types.at(-1) === "mouseReleased", { dr, types });
+  const drops = sent("Input.dispatchDragEvent").map((p) => p.type);
+  t.check("HTML5 drag is completed with dragEnter/dragOver/drop on the target",
+    drops.join() === "dragEnter,dragOver,drop" && sent("Input.dispatchDragEvent")[2].x === 300, drops);
+  t.check("drag interception switched off again", sent("Input.setInterceptDrags").map((p) => p.enabled).join() === "true,false");
+
+  const up = await cmd(d, ws, "upload_file", { selector: "input[type=file]", files: ["/tmp/a.txt"] });
+  const set = sent("DOM.setFileInputFiles");
+  t.check("upload goes through DOM.setFileInputFiles on the marked input",
+    up.ok === true && set.length === 1 && set[0].objectId === "obj-1" && set[0].files[0] === "/tmp/a.txt", { up, set });
+  const mark = chrome._calls.executeScript.find((c) => c.func.name === "pageMarkFileInput").args[2];
+  t.check("the CDP side looks up exactly the marked element and unmarks it",
+    sent("Runtime.evaluate")[0].expression.includes(mark) && /removeAttribute/.test(sent("Runtime.evaluate")[0].expression));
+  const none = await cmd(d, ws, "upload_file", { selector: "input" , files: [] });
+  t.check("upload without files rejected", none.ok === false, none);
+}
+{
+  const { d, ws } = await boot(createDispatcher, {
+    tabs: TABS, storage: { grantedTabs: [1], grantedTabId: 1, mode: "readonly" },
+    scriptResult: { ok: true, x: 1, y: 1, inViewport: true, name: "m" },
+  });
+  const dr = await cmd(d, ws, "drag", { fromSelector: "#a", toSelector: "#b" });
+  const up = await cmd(d, ws, "upload_file", { selector: "input", files: ["/tmp/a.txt"] });
+  const hv = await cmd(d, ws, "hover", { selector: "#m" });
+  t.check("read-only blocks drag", dr.ok === false && /read-only/i.test(dr.error));
+  t.check("read-only blocks file upload", up.ok === false && /read-only/i.test(up.error));
+  t.check("read-only allows hover (it only reveals, like scroll)", hv.ok === true, hv);
+}
+
 process.exit(t.done("dispatcher") ? 0 : 1);

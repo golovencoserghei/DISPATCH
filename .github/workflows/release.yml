@@ -31,6 +31,7 @@ jobs:
       - name: Tests
         env:
           DISPATCH_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          DISPATCH_E2E_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
         run: npm test
       - name: Tag matches the versions in the repo
         run: |

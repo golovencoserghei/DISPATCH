@@ -66,6 +66,25 @@ async function main() {
   await cdp.run(page.pageType, [null, "#name", "Привет мир", false]);
   t.check("type wrote the value", (await cdp.run(page.pageEval, ["document.getElementById('name').value"])).json === '"Привет мир"');
 
+  await cdp.run(page.pageType, [null, "#color", "g", false]);
+  t.check("select: picks an option by value", (await cdp.run(page.pageEval, ["document.getElementById('color').value"])).json === '"g"');
+  const byLabel = await cdp.run(page.pageType, [null, "#color", "Blue", false]);
+  t.check("select: picks an option by visible label", byLabel.ok && byLabel.selected === "Blue" &&
+    (await cdp.run(page.pageEval, ["document.getElementById('color').value"])).json === '"b"');
+  const noOpt = await cdp.run(page.pageType, [null, "#color", "Purple", false]);
+  t.check("select: unknown option → error listing the options", !noOpt.ok && /Red \| Green \| Blue/.test(noOpt.error), noOpt);
+
+  const pt = await cdp.run(page.pagePoint, [null, "#save", true]);
+  t.check("point: center of the element, in view after scrolling", pt.ok && pt.inViewport, pt);
+  t.check("point: the element is really there",
+    (await cdp.run(page.pageEval, [`document.elementFromPoint(${pt.x}, ${pt.y})?.id`])).json === '"save"');
+  t.check("point: missing element → error", (await cdp.run(page.pagePoint, [null, "#nope", false])).ok === false);
+
+  t.check("file input: not a file input → error", (await cdp.run(page.pageMarkFileInput, [null, "#name", "m1", 1])).ok === false);
+  t.check("file input: two files into a single-file input → error", (await cdp.run(page.pageMarkFileInput, [null, "#one", "m1", 2])).ok === false);
+  t.check("file input: marked for the CDP side", (await cdp.run(page.pageMarkFileInput, [null, "#one", "m1", 1])).ok &&
+    (await cdp.run(page.pageEval, ["document.getElementById('one').getAttribute('data-dispatch-upload')"])).json === '"m1"');
+
   const foc = await cdp.run(page.pageFocus, ["#bio"]);
   t.check("focus focused #bio", foc.ok && (await cdp.run(page.pageEval, ["document.activeElement.id"])).json === '"bio"');
 

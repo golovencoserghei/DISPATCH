@@ -38,9 +38,12 @@ extension (MV3)  ── background.js: обвязка (даёт ядру нас�
 | `browser_snapshot`   | Снимок интерактивных элементов с `ref` (для кликов)     |
 | `browser_get_html`   | outerHTML страницы или узла по селектору                |
 | `browser_eval`       | Выполнить JS в контексте страницы (main world), вернуть JSON |
-| `browser_click`      | Клик по `ref` (из снимка) или CSS-селектору             |
-| `browser_type`       | Ввод текста в поле по `ref`/селектору (+опц. submit)     |
-| `browser_press_key`  | Нажать клавишу через CDP (Enter, Tab, стрелки, символ)  |
+| `browser_click`      | Клик по `ref` (из снимка) или CSS-селектору; `dialog: "accept"`/`"dismiss"` — ответить на alert/confirm/prompt, который откроет клик |
+| `browser_type`       | Ввод текста в поле по `ref`/селектору (+опц. submit); в `<select>` выбирает опцию по value или тексту |
+| `browser_press_key`  | Нажать клавишу через CDP (Enter, Tab, стрелки, символ); тоже принимает `dialog` |
+| `browser_hover`      | Навести настоящую мышь: открывает меню, подсказки, кнопки строк |
+| `browser_drag`       | Перетащить на цель — карточки канбана, сортируемые списки, слайдеры, HTML5 drop-зоны |
+| `browser_upload_file`| Положить локальные файлы в `<input type=file>`            |
 | `browser_scroll`     | Прокрутка страницы/контейнера, `toBottom` для лент      |
 | `browser_wait_for`   | Дождаться появления селектора                            |
 | `browser_screenshot` | Скриншот видимой области или всей страницы (`fullPage`)  |
@@ -88,9 +91,9 @@ extension (MV3)  ── background.js: обвязка (даёт ядру нас�
 | Логи консоли | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Скриншот всей страницы | ✅ | ✅ | ✅ | ✅ | ❌ видимая область | — |
 | Эмуляция устройств | ✅ устройство, viewport, UA, гео | ✅ + троттлинг CPU/сети | ⚠️ media, resize | ⚠️ viewport | ❌ | — |
-| Hover, drag, загрузка файлов, диалоги | ❌ | ✅ | ✅ | ✅ | ⚠️ hover | ⚠️ загрузка |
+| Hover, drag, загрузка файлов, диалоги | ✅ ⁵ | ✅ | ✅ | ✅ | ⚠️ hover | ⚠️ загрузка |
 | Performance-трейсы / Lighthouse | ❌ | ✅ | ⚠️ трейсы Playwright | ⚠️ perf-трейсы | ❌ | — |
-| Инструментов | 22 | 59 вкл. opt-in | 25 (72 с `--caps`) | 27 | 12 | — |
+| Инструментов | 25 | 59 вкл. opt-in | 25 (72 с `--caps`) | 27 | 12 | — |
 | Chrome Web Store | скоро | без расширения | ✅ | ❌ только unpacked | ✅ | ✅ |
 | Телеметрия | нет | статистика по умолчанию (отключаемая) | — | — | анонимная аналитика на каждый вызов | — |
 
@@ -98,7 +101,8 @@ extension (MV3)  ── background.js: обвязка (даёт ядру нас�
 ² Relay расширения не проверяет, что команда идёт во вкладку из группы; диалог
 подключения сам предупреждает, что «открывает весь браузер».<br>
 ³ [Issue #158][bmc158], закрыт как not planned.<br>
-⁴ Через `browser_select_tab` / `browser_open_tab` — см. «Модель доступа» ниже.
+⁴ Через `browser_select_tab` / `browser_open_tab` — см. «Модель доступа» ниже.<br>
+⁵ Только верхний фрейм; на диалог агент отвечает, если сказал заранее (`dialog: "accept"`).
 
 **Берите Dispatch**, если хотите держать агента подключённым к своему
 повседневному браузеру с жёсткими и видимыми границами: allowlist, который
@@ -108,9 +112,9 @@ extension (MV3)  ── background.js: обвязка (даёт ядру нас�
 
 **Берите другое**, если нужно подтверждение каждого действия (Claude in Chrome),
 глубокая работа с производительностью — трейсы, Lighthouse, heap snapshots
-(Chrome DevTools MCP), генерация тестов, трейсинг/видео и моки (Playwright MCP)
-или более богатый ввод (DevTools MCP, Playwright MCP, mcp-chrome). Hover,
-drag-and-drop, загрузки файлов и JS-диалогов в Dispatch пока нет.
+(Chrome DevTools MCP), генерация тестов, трейсинг/видео и моки сети
+(Playwright MCP). Они хорошо дополняют друг друга: для разбора
+производительности Chrome DevTools MCP можно запустить рядом с Dispatch.
 
 [cdm]: https://github.com/ChromeDevTools/chrome-devtools-mcp
 [pwm]: https://github.com/microsoft/playwright-mcp
@@ -177,8 +181,9 @@ drag-and-drop, загрузки файлов и JS-диалогов в Dispatch 
   разных страниц не смешиваются.
 
 Режим **Только чтение** блокирует изменяющие команды — `navigate`, `open_tab`,
-`close_tab`, `click`, `type`, `press_key`, `eval`, `emulate` (агент видит, но не
-действует). `emulate` в этом списке потому, что подмена viewport / User-Agent /
+`close_tab`, `click`, `type`, `press_key`, `eval`, `emulate`, `drag`, `upload_file`
+(агент видит, но не действует). `hover` разрешён: как и прокрутка, он только
+показывает то, что страница раскрывает при наведении. `emulate` в этом списке потому, что подмена viewport / User-Agent /
 геолокации меняет то, что видит страница; снять уже включённую эмуляцию из
 read-only нельзя — для этого есть кнопка «Стоп отладки» в popup.
 Наблюдение (snapshot, screenshot, network, console, scroll, extract…) работает всегда;
@@ -264,7 +269,7 @@ SIGTERM дочернему процессу, поэтому порт освоб�
 ```bash
 npm install     # ставит корневые зависимости + mcp-server (postinstall)
 npm run typecheck
-npm test        # policy + dispatcher + smoke + security + release + page-functions
+npm test        # policy + dispatcher + smoke + security + release + e2e + page-functions
 ```
 
 - **policy** — правила доступа: read-only, allowlist (хосты, порты, поддомены), парсинг ref.
@@ -278,28 +283,39 @@ npm test        # policy + dispatcher + smoke + security + release + page-functi
   связи не подвешивает команду.
 - **release** — версии в manifest / package.json / server.json совпадают, все
   `__MSG_*__` и ключи popup есть в `_locales`, у локалей одинаковые ключи.
+- **e2e** — НАСТОЯЩЕЕ расширение в Chromium + настоящий сервер + страница: hover,
+  оба вида drag, загрузка файла, select, confirm/prompt, ошибка на зависшей странице.
+  Браузер — `$DISPATCH_E2E_BROWSER` или `chromium` в PATH; без него набор пропускается.
 - **page-functions** — логика `extension/page.js` на живом headless-Chrome через CDP
   (тот же механизм, что `chrome.scripting.executeScript({func})`). Бинарь Chrome можно
   задать через `DISPATCH_CHROME`; без Chrome набор пропускается.
 - **tests/manual/** — прогоны на РЕАЛЬНОМ браузере (`stage3.mjs` — все инструменты;
   `playlist-export.mjs` — пример сбора данных). Не для CI.
 
-### Почему настоящее расширение не гоняется в автотесте
+### Почему e2e нужен Chromium, а не Chrome
 
-Chrome 137+ **намеренно игнорирует `--load-extension`, когда включён удалённый
+Фирменный Chrome 137+ **намеренно игнорирует `--load-extension`, когда включён удалённый
 отладчик** (`--remote-debugging-port` или `--remote-debugging-pipe`) — иначе malware
 цепляло бы CDP к чужому браузеру ровно так, как это делает Dispatch. Обойти нельзя:
 ни headless, ни headful, ни `--disable-features=DisableLoadExtensionCommandLineSwitch`,
 ни `--enable-unsafe-extension-debugging` защиту не снимают (проверено на Chrome 149).
 
-Поэтому логика расширения вынесена в `dispatcher.js` за фасад `chrome` и покрыта
+Chromium и Chrome for Testing эту связку по-прежнему разрешают — на них и
+гоняется `tests/e2e.mjs` (в CI `setup-chrome` ставит Chromium). Логика расширения
+при этом вынесена в `dispatcher.js` за фасад `chrome` и подробно покрыта
 `tests/dispatcher.mjs` на моках, а `page.js` проверяется на живом Chrome тем же
-механизмом, каким его исполняет `chrome.scripting`. Непокрытым остаётся лишь тонкий
-слой `background.js` (проброс настоящего API) — его смотрит `tests/manual/stage3.mjs`.
+механизмом, каким его исполняет `chrome.scripting`.
 
 CI: [.github/workflows/ci.yml](.github/workflows/ci.yml) — typecheck + весь автономный набор.
 
 ## Заметки
+- **JS-диалоги**: `alert`/`confirm`/`prompt` замораживают страницу, а CDP может
+  ответить только на диалог, открывшийся при уже подключённой сессии. Поэтому
+  агент говорит заранее: `browser_click({ selector: "#delete", dialog: "accept" })`.
+  Если неожиданный диалог всё же заморозил страницу, команды через ~3 с падают с
+  понятной ошибкой вместо зависания; ответить на диалог должен человек.
+- `browser_hover`, `browser_drag` и `browser_upload_file` работают в верхнем фрейме
+  (координаты мыши в чужом iframe неизвестны).
 - **iframe**: `browser_snapshot` собирает элементы со всех инъектируемых фреймов; `ref`
   имеет вид `<frameId>:<localRef>` (например `3:e12`). `browser_click`/`browser_type`
   по такому ref действуют в нужном фрейме. `eval`/`get_html` работают в верхнем фрейме.

@@ -28,8 +28,8 @@ claude mcp add dispatch -- npx -y dispatch-browser-mcp
 | `DISPATCH_PORT` | `8765` | Local WebSocket port (set the same in the popup) |
 | `DISPATCH_TOKEN` | — | Shared secret (set the same in the popup) |
 
-22 tools: navigation, DOM snapshot with refs, click/type/keys, scroll,
-structured extraction, JS eval, screenshots, and a persistent CDP session for
+25 tools: navigation, DOM snapshot with refs, click/type/keys, hover,
+drag-and-drop, file upload, answering JS dialogs, scroll, structured extraction, JS eval, screenshots, and a persistent CDP session for
 console, network (with response bodies) and device emulation.
 
 MIT licensed.

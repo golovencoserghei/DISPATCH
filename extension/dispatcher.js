@@ -11,6 +11,7 @@
 import {
   pageSnapshot, pageGetHtml, pageEval, pageFocus, pageHref,
   pageClick, pageType, pageWaitFor, pageExtract, pageScroll, pageShield,
+  pagePoint, pageMarkFileInput,
 } from "./page.js";
 import { methodAllowed, hostAllowed, urlAllowed, hostOf, parseRef } from "./policy.js";
 
@@ -19,6 +20,17 @@ export const PROTOCOL_VERSION = 1; // must match the server (bridge.ts)
 const NET_MAX = 500;      // network request ring buffer size
 const CONSOLE_MAX = 500;  // console log ring buffer size
 const LOG_MAX = 40;
+// A page frozen by an alert/confirm/prompt never answers executeScript. If a
+// command is silent this long, probe the page; a probe that is silent too means
+// the page is blocked, and the agent gets a clear error instead of a 30 s timeout.
+const PROBE_AFTER_MS = 2000;
+const PROBE_TIMEOUT_MS = 1500;
+// After an action armed with `dialog`, wait this long for a dialog the page
+// opens a moment later (setTimeout, after a fetch) before detaching.
+const DIALOG_GRACE_MS = 300;
+const DRAG_STEPS = 5;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const DEVICES = {
   "iPhone 14": { w: 390, h: 844, dsf: 3, mobile: true, ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1" },
@@ -351,12 +363,30 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   }
 
   // ── in-page execution (chrome.scripting) ───────────────────────────────────
+
+  /**
+   * Wait for an executeScript call, but don't hang on a frozen page: past
+   * PROBE_AFTER_MS, run a trivial probe in the same frame. A busy-but-alive
+   * page (wait_for polling, eval awaiting a fetch) answers it and we keep
+   * waiting; a page blocked by a JS dialog doesn't, and we fail fast.
+   */
+  async function guardBlocked(target, job) {
+    const early = await Promise.race([job.then((v) => ({ v }), (e) => ({ e })), sleep(PROBE_AFTER_MS)]);
+    if (early) { if ("e" in early) throw early.e; return early.v; }
+    const probe = chrome.scripting.executeScript({ target, world: "ISOLATED", func: pageHref });
+    const alive = await Promise.race([probe.then(() => true, () => true), sleep(PROBE_TIMEOUT_MS).then(() => false)]);
+    if (!alive) {
+      throw new Error("The page is not responding — most likely a JavaScript dialog (alert/confirm/prompt) is open, possibly opened by this very action. Ask the user to answer it in the browser. To have Dispatch answer dialogs, pass dialog: \"accept\" or \"dismiss\" to browser_click / browser_type / browser_press_key.");
+    }
+    return job;
+  }
+
   async function runInPage(func, args = [], world = "ISOLATED", frameId = 0, tabId = undefined) {
     const tab = await grantedTab(tabId);
     requireInjectable(tab);
     if (frameId) await requireFrameAllowed(tab.id, frameId);
     const target = frameId ? { tabId: tab.id, frameIds: [frameId] } : { tabId: tab.id };
-    const res = await chrome.scripting.executeScript({ target, world, func, args });
+    const res = await guardBlocked(target, chrome.scripting.executeScript({ target, world, func, args }));
     const r = res && res[0] ? res[0].result : undefined;
     if (r && r.ok === false) throw new Error(r.error || "in-page execution error");
     return r;
@@ -502,7 +532,16 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     if (dbg.console.length > CONSOLE_MAX) dbg.console.shift();
   }
 
+  // One-off operations (dialogs, drag) listen for their own events while attached.
+  const cdpListeners = new Set();
+  function onCdp(tabId, method, fn) {
+    const l = (id, m, p) => { if (id === tabId && m === method) fn(p); };
+    cdpListeners.add(l);
+    return () => cdpListeners.delete(l);
+  }
+
   function handleCdpEvent(source, method, params) {
+    for (const l of cdpListeners) { try { l(source.tabId, method, params); } catch { /* a listener must not break capture */ } }
     if (!dbg.persistent || source.tabId !== dbg.tabId) return;
     try { dispatchCdpEvent(method, params); } catch { /* protect the buffer */ }
   }
@@ -632,6 +671,34 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     return { ok: true, applied, note: "Emulation stays active while the debug session runs (Chrome shows its debugging banner)." };
   }
 
+  // ── JavaScript dialogs ─────────────────────────────────────────────────────
+  /**
+   * Run an action that may open alert/confirm/prompt, answering it as told.
+   * CDP only sees dialogs that open while Page is enabled — attaching after the
+   * fact doesn't work — so the session is opened BEFORE the action. Without
+   * `dialog` there is no CDP at all (no debugging banner on every click).
+   */
+  function withDialog(tabId, dialog, promptText, action) {
+    if (!dialog) return action();
+    if (dialog !== "accept" && dialog !== "dismiss") throw new Error(`dialog must be "accept" or "dismiss", got "${dialog}"`);
+    return withTempCdp(tabId, async () => {
+      await dbgSend(tabId, "Page.enable");
+      let seen = null;
+      let answering = Promise.resolve();
+      const off = onCdp(tabId, "Page.javascriptDialogOpening", (p) => {
+        const d = (seen = { type: p.type, message: p.message, answer: dialog });
+        answering = dbgSend(tabId, "Page.handleJavaScriptDialog", { accept: dialog === "accept", promptText })
+          .catch((e) => { d.error = e.message; });
+      });
+      try {
+        const result = await action();
+        if (!seen) await sleep(DIALOG_GRACE_MS);
+        await answering; // don't detach while the answer is still in flight
+        return { ...result, dialog: seen };
+      } finally { off(); }
+    });
+  }
+
   // ── precise input (CDP Input) ──────────────────────────────────────────────
   async function pressKey(params) {
     const tab = await grantedTab();
@@ -641,7 +708,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     const spec = KEY_MAP[key] || (key.length === 1
       ? { key, code: "Key" + key.toUpperCase(), keyCode: key.toUpperCase().charCodeAt(0), text: key }
       : { key, code: key, keyCode: 0 });
-    return withTempCdp(tab.id, async () => {
+    const send = async () => {
       const base = {
         key: spec.key, code: spec.code,
         windowsVirtualKeyCode: spec.keyCode, nativeVirtualKeyCode: spec.keyCode,
@@ -649,6 +716,92 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: spec.text ? "keyDown" : "rawKeyDown", ...base, text: spec.text });
       await dbgSend(tab.id, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
       return { ok: true, key };
+    };
+    // withDialog already holds a CDP session; without it — a one-off one.
+    return params.dialog ? withDialog(tab.id, params.dialog, params.promptText, send) : withTempCdp(tab.id, send);
+  }
+
+  const mouse = (tabId, type, x, y, buttons = 0) =>
+    dbgSend(tabId, "Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
+
+  /**
+   * Viewport point of an element in the TOP frame. Mouse events are in the top
+   * frame's coordinates; a nested frame's offset isn't knowable for a
+   * cross-origin iframe, so coordinate actions are top-frame only.
+   */
+  async function pointOf(tabId, ref, selector, scroll) {
+    const { frameId, localRef } = parseRef(ref);
+    if (frameId) throw new Error(`ref ${ref} is inside a frame — hover, drag and file upload work in the top frame only.`);
+    return runInPage(pagePoint, [localRef, selector || null, !!scroll], "ISOLATED", 0, tabId);
+  }
+
+  async function hover({ ref, selector, tabId }) {
+    const tab = await grantedTab(tabId);
+    const p = await pointOf(tab.id, ref, selector, true);
+    return withTempCdp(tab.id, async () => {
+      await mouse(tab.id, "mouseMoved", p.x, p.y);
+      return { ok: true, hovered: p.name };
+    });
+  }
+
+  /**
+   * Press on one element, move to another, release. That covers mouse/pointer
+   * based widgets (sliders, sortable lists). Native HTML5 drag-and-drop doesn't
+   * finish from mouse events alone, so drags are intercepted and, if the page
+   * started one, its drop is delivered with Input.dispatchDragEvent.
+   */
+  async function drag({ fromRef, fromSelector, toRef, toSelector, tabId }) {
+    const tab = await grantedTab(tabId);
+    const a = await pointOf(tab.id, fromRef, fromSelector, true);
+    const b = await pointOf(tab.id, toRef, toSelector, false);
+    if (!b.inViewport) throw new Error("The drop target is off-screen while the source is in view — scroll so both are visible, or drag in steps.");
+    return withTempCdp(tab.id, async () => {
+      let data = null;
+      const off = onCdp(tab.id, "Input.dragIntercepted", (p) => { data = p.data; });
+      try {
+        await dbgSend(tab.id, "Input.setInterceptDrags", { enabled: true });
+        await mouse(tab.id, "mouseMoved", a.x, a.y);
+        await mouse(tab.id, "mousePressed", a.x, a.y, 1);
+        for (let i = 1; i <= DRAG_STEPS; i++) {
+          const k = i / DRAG_STEPS;
+          await mouse(tab.id, "mouseMoved", a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, 1);
+        }
+        if (!data) await sleep(100); // the intercept event may trail the last move
+        if (data) {
+          for (const type of ["dragEnter", "dragOver", "drop"]) {
+            await dbgSend(tab.id, "Input.dispatchDragEvent", { type, x: b.x, y: b.y, data });
+          }
+        }
+        await mouse(tab.id, "mouseReleased", b.x, b.y);
+        return { ok: true, from: a.name, to: b.name, html5: !!data };
+      } finally {
+        off();
+        await dbgSend(tab.id, "Input.setInterceptDrags", { enabled: false }).catch(() => {});
+      }
+    });
+  }
+
+  /**
+   * Put local files into an <input type=file>. Pages can't set files from
+   * script, so this goes through DOM.setFileInputFiles. The element is found in
+   * the isolated world (where refs live), tagged, and picked up from the main
+   * world by that tag — which is removed in the same step.
+   */
+  async function uploadFile({ ref, selector, files, tabId }) {
+    if (!Array.isArray(files) || !files.length) throw new Error("no files given (files: absolute paths)");
+    const tab = await grantedTab(tabId);
+    const { frameId, localRef } = parseRef(ref);
+    if (frameId) throw new Error(`ref ${ref} is inside a frame — hover, drag and file upload work in the top frame only.`);
+    const mark = `u${now()}${Math.random().toString(36).slice(2, 8)}`;
+    await runInPage(pageMarkFileInput, [localRef, selector || null, mark, files.length], "ISOLATED", 0, tab.id);
+    return withTempCdp(tab.id, async () => {
+      const r = await dbgSend(tab.id, "Runtime.evaluate", {
+        expression: `(() => { const el = document.querySelector('[data-dispatch-upload="${mark}"]'); el?.removeAttribute("data-dispatch-upload"); return el; })()`,
+      });
+      const objectId = r && r.result && r.result.objectId;
+      if (!objectId) throw new Error("the file input disappeared before upload — take a fresh browser_snapshot");
+      await dbgSend(tab.id, "DOM.setFileInputFiles", { files, objectId });
+      return { ok: true, files: files.length };
     });
   }
 
@@ -747,9 +900,9 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       const tab = await grantedTab(tabId);
       requireInjectable(tab);
       // allFrames: snapshot from ALL injectable frames; ref = "<frameId>:<localRef>".
-      const results = await chrome.scripting.executeScript({
+      const results = await guardBlocked({ tabId: tab.id }, chrome.scripting.executeScript({
         target: { tabId: tab.id, allFrames: true }, world: "ISOLATED", func: pageSnapshot,
-      });
+      }));
       const elements = [];
       let url = tab.url, title = tab.title || "";
       let skippedFrames = 0;
@@ -775,14 +928,30 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       return runInPage(pageEval, [expression], "MAIN", 0, tabId);
     },
 
-    async click({ ref, selector, tabId }) {
+    async click({ ref, selector, tabId, dialog, promptText }) {
       const { frameId, localRef } = parseRef(ref);
-      return runInPage(pageClick, [localRef, selector || null], "ISOLATED", frameId, tabId);
+      const tab = await grantedTab(tabId);
+      return withDialog(tab.id, dialog, promptText,
+        () => runInPage(pageClick, [localRef, selector || null], "ISOLATED", frameId, tab.id));
     },
 
-    async type({ ref, selector, text, submit, tabId }) {
+    async type({ ref, selector, text, submit, tabId, dialog, promptText }) {
       const { frameId, localRef } = parseRef(ref);
-      return runInPage(pageType, [localRef, selector || null, text, !!submit], "ISOLATED", frameId, tabId);
+      const tab = await grantedTab(tabId);
+      return withDialog(tab.id, dialog, promptText,
+        () => runInPage(pageType, [localRef, selector || null, text, !!submit], "ISOLATED", frameId, tab.id));
+    },
+
+    async hover(params) {
+      return hover(params);
+    },
+
+    async drag(params) {
+      return drag(params);
+    },
+
+    async upload_file(params) {
+      return uploadFile(params);
     },
 
     async wait_for({ selector, timeoutMs, tabId }) {

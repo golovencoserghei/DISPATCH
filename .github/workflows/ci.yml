@@ -27,4 +27,8 @@ jobs:
       - name: Run tests
         env:
           DISPATCH_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+          # setup-chrome installs Chromium, which (unlike branded Chrome) still
+          # loads unpacked extensions next to remote debugging — so the e2e
+          # suite runs the real extension.
+          DISPATCH_E2E_BROWSER: ${{ steps.chrome.outputs.chrome-path }}
         run: npm test

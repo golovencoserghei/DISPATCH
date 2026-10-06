@@ -15,6 +15,9 @@ t.check("readonly allows scroll", methodAllowed("scroll", "readonly") === true);
 t.check("readonly allows network", methodAllowed("network", "readonly") === true);
 // Emulation changes what the page sees (viewport/UA/geolocation) — that's an action.
 t.check("readonly blocks emulate", methodAllowed("emulate", "readonly") === false);
+t.check("readonly blocks drag", methodAllowed("drag", "readonly") === false);
+t.check("readonly blocks upload_file", methodAllowed("upload_file", "readonly") === false);
+t.check("readonly allows hover (reveals only, like scroll)", methodAllowed("hover", "readonly") === true);
 t.check("readonly allows debug_start (observation)", methodAllowed("debug_start", "readonly") === true);
 t.check("readonly allows console_logs", methodAllowed("console_logs", "readonly") === true);
 t.check("full allows click", methodAllowed("click", "full") === true);

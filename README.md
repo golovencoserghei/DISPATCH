@@ -89,7 +89,10 @@ requests”*.
 | `browser_get_html` | outerHTML of the page or a node |
 | `browser_extract` | Structured scraping by CSS selectors (cards, table rows) |
 | `browser_eval` | Run JS in the page, get JSON back |
-| `browser_click` / `browser_type` / `browser_press_key` | Act by `ref` or selector; keys via CDP |
+| `browser_click` / `browser_type` / `browser_press_key` | Act by `ref` or selector; keys via CDP; `type` also picks `<select>` options. Pass `dialog: "accept"` / `"dismiss"` to answer an alert/confirm/prompt the action opens |
+| `browser_hover` | Real mouse-over: reveals menus, tooltips, row actions |
+| `browser_drag` | Drag onto a target — kanban cards, sortable lists, sliders, HTML5 drop zones |
+| `browser_upload_file` | Put local files into an `<input type=file>` |
 | `browser_scroll` / `browser_wait_for` | Scroll (incl. infinite feeds), wait for a selector |
 | `browser_screenshot` | Visible area or full page |
 
@@ -148,9 +151,9 @@ source on **2026-10-06**; corrections welcome via issue or PR.
 | Console logs | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Full-page screenshots | ✅ | ✅ | ✅ | ✅ | ❌ visible area | — |
 | Device emulation | ✅ device, viewport, UA, geo | ✅ + CPU/network throttling | ⚠️ media, resize | ⚠️ viewport | ❌ | — |
-| Hover, drag, file upload, dialogs | ❌ | ✅ | ✅ | ✅ | ⚠️ hover | ⚠️ upload |
+| Hover, drag, file upload, dialogs | ✅ ⁵ | ✅ | ✅ | ✅ | ⚠️ hover | ⚠️ upload |
 | Performance traces / Lighthouse | ❌ | ✅ | ⚠️ Playwright traces | ⚠️ perf traces | ❌ | — |
-| Tools | 22 | 59 incl. opt-in | 25 (72 with `--caps`) | 27 | 12 | — |
+| Tools | 25 | 59 incl. opt-in | 25 (72 with `--caps`) | 27 | 12 | — |
 | Chrome Web Store | soon | no extension | ✅ | ❌ unpacked only | ✅ | ✅ |
 | Telemetry | none | usage stats on by default (opt-out) | — | — | anonymous analytics per tool call | — |
 
@@ -159,7 +162,8 @@ source on **2026-10-06**; corrections welcome via issue or PR.
 that commands target tabs in the group; its own connect dialog warns it
 “exposes the entire browser”.<br>
 ³ [Issue #158][bmc158], closed as not planned.<br>
-⁴ Via `browser_select_tab` / `browser_open_tab` — see [Access model](#access-model-in-detail).
+⁴ Via `browser_select_tab` / `browser_open_tab` — see [Access model](#access-model-in-detail).<br>
+⁵ Top frame only; dialogs are answered when the agent says so up front (`dialog: "accept"`).
 
 **Pick Dispatch** if you want to leave an agent connected to your everyday
 browser and need hard, visible limits: an allowlist that also covers iframes
@@ -168,9 +172,9 @@ touch, and a kill switch — with any MCP client, in ~2k lines you can audit.
 
 **Pick something else** if you need per-action approval (Claude in Chrome),
 deep performance work — traces, Lighthouse, heap snapshots (Chrome DevTools
-MCP), test generation, tracing/video and mocking (Playwright MCP), or richer
-input actions (DevTools MCP, Playwright MCP, mcp-chrome). Dispatch doesn't yet
-do hover, drag-and-drop, file upload or JS dialogs.
+MCP), or test generation, tracing/video and network mocking (Playwright MCP).
+These are good companions: run Chrome DevTools MCP next to Dispatch when you
+need a performance deep-dive.
 
 [cdm]: https://github.com/ChromeDevTools/chrome-devtools-mcp
 [pwm]: https://github.com/microsoft/playwright-mcp
@@ -202,7 +206,7 @@ There are exactly two hard boundaries: the **master switch** and the
     against the allowlist every time.
 
 **Read-only** blocks `navigate`, `open_tab`, `close_tab`, `click`, `type`,
-`press_key`, `eval`, `emulate`. Observation and switching tabs still work, so
+`press_key`, `eval`, `emulate`, `drag`, `upload_file`. Observation and switching tabs still work, so
 read-only ≠ “one tab only”.
 
 `browser_close_tab` closes only granted tabs.
@@ -235,7 +239,7 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 ```bash
 npm install          # root + mcp-server (postinstall)
 npm run typecheck
-npm test             # policy, dispatcher, smoke, security, release, page-functions
+npm test             # policy, dispatcher, smoke, security, release, e2e, page-functions
 npm run build        # compile the MCP server to mcp-server/dist
 npm run pack:extension
 ```
@@ -259,16 +263,26 @@ extension (MV3) ── background.js  thin binding to the real chrome.* API
                    page.js        functions injected into the page
 ```
 
-**Why the real extension isn't loaded in CI:** Chrome 137+ deliberately ignores
-`--load-extension` when remote debugging is enabled (otherwise malware could
-attach CDP to your browser exactly the way Dispatch does). So the extension
-logic lives in `dispatcher.js` behind a `chrome` facade and is tested against
-mocks, and `page.js` runs in headless Chrome via the same mechanism
-`chrome.scripting` uses. Only the thin `background.js` binding is left to
-`tests/manual/`.
+**How it's tested.** The extension logic lives in `dispatcher.js` behind a
+`chrome` facade and is unit-tested against mocks; `page.js` runs in headless
+Chrome via the same mechanism `chrome.scripting` uses. `tests/e2e.mjs` then
+loads the **real extension** into Chromium, connects it to the real server and
+drives a page through MCP (hover, drag, upload, dialogs…). Branded Chrome 137+
+refuses `--load-extension` next to remote debugging (otherwise malware could
+attach CDP to your browser exactly the way Dispatch does), so e2e needs
+Chromium or Chrome for Testing (`$DISPATCH_E2E_BROWSER`) and is skipped
+without one.
 
 ### Notes
 
+- **JS dialogs.** An `alert`/`confirm`/`prompt` freezes the page, and CDP can
+  only answer one that opened while it was already attached. So the agent says
+  up front: `browser_click({ selector: "#delete", dialog: "accept" })`. If an
+  unexpected dialog freezes the page, commands fail within ~3 s with an error
+  that says so, instead of hanging; the user answers it in the browser.
+- `browser_hover`, `browser_drag` and `browser_upload_file` work in the top
+  frame (mouse coordinates of a cross-origin iframe aren't knowable).
+  `hover` is allowed in read-only mode, `drag` and `upload_file` are not.
 - `ref`s in iframes look like `<frameId>:<localRef>` (e.g. `3:e12`);
   `eval`/`get_html` run in the top frame.
 - Chrome shows its “being debugged” banner while a CDP session is open. For

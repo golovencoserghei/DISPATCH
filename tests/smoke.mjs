@@ -9,6 +9,7 @@ const EXPECTED = [
   "browser_scroll", "browser_wait_for", "browser_extract", "browser_screenshot",
   "browser_debug_start", "browser_debug_stop", "browser_console_logs",
   "browser_network", "browser_network_body", "browser_emulate",
+  "browser_hover", "browser_drag", "browser_upload_file",
 ];
 
 const PORT = 8781;

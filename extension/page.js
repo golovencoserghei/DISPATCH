@@ -81,6 +81,19 @@ export function pageType(ref, selector, text, submit) {
   const el = ref ? (store.refs || {})[ref] : (selector ? document.querySelector(selector) : null);
   if (!el) return { ok: false, error: "element not found" };
   el.focus();
+  if (el instanceof HTMLSelectElement) {
+    // <select>: text is the option's value or its visible label.
+    const want = String(text).trim();
+    const opts = Array.from(el.options);
+    const opt = opts.find((o) => o.value === want) || opts.find((o) => o.text.trim() === want);
+    if (!opt) {
+      return { ok: false, error: `no option "${want}". Options: ${opts.slice(0, 30).map((o) => o.text.trim()).join(" | ")}` };
+    }
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(el, opt.value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, selected: opt.text.trim() };
+  }
   const isInput = el instanceof HTMLInputElement;
   const isArea = el instanceof HTMLTextAreaElement;
   if (isInput || isArea) {
@@ -191,6 +204,35 @@ export function pageShield(mode) {
  */
 export function pageHref() {
   return { ok: true, url: location.href };
+}
+
+/**
+ * Viewport point (CSS px) at the center of an element — where CDP mouse events
+ * go for hover and drag. scroll=true brings the element into view first.
+ */
+export function pagePoint(ref, selector, scroll) {
+  const store = window.__DISPATCH__ || {};
+  const el = ref ? (store.refs || {})[ref] : (selector ? document.querySelector(selector) : null);
+  if (!el) return { ok: false, error: ref ? `ref ${ref} not found — take a fresh browser_snapshot` : "no element matches the selector" };
+  if (scroll) el.scrollIntoView({ block: "center", inline: "center" });
+  const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const inViewport = x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  return { ok: true, x, y, inViewport, name: (el.innerText || el.value || el.tagName).toString().trim().slice(0, 80) };
+}
+
+/**
+ * Tag a file input with data-dispatch-upload=<mark> so the CDP side (main world)
+ * can find the same element the agent pointed at in this (isolated) world.
+ */
+export function pageMarkFileInput(ref, selector, mark, count) {
+  const store = window.__DISPATCH__ || {};
+  const el = ref ? (store.refs || {})[ref] : (selector ? document.querySelector(selector) : null);
+  if (!el) return { ok: false, error: ref ? `ref ${ref} not found — take a fresh browser_snapshot` : "no element matches the selector" };
+  if (!(el instanceof HTMLInputElement) || el.type !== "file") return { ok: false, error: "element is not <input type=file>" };
+  if (count > 1 && !el.multiple) return { ok: false, error: "this file input accepts a single file" };
+  el.setAttribute("data-dispatch-upload", mark);
+  return { ok: true };
 }
 
 export function pageScroll(selector, dx, dy, toBottom) {

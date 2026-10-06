@@ -7,8 +7,12 @@
 // "emulate" is here on purpose: overriding viewport/User-Agent/geolocation is
 // an ACTION — the page starts seeing a different environment. Emulation cannot
 // be cleared from read-only; use the "Stop debugging" button in the popup.
+//
+// "hover" is deliberately NOT here: like scroll, it only reveals what the page
+// already shows on mouse-over (menus, tooltips) and submits nothing.
 export const MUTATING = new Set([
   "navigate", "open_tab", "close_tab", "click", "type", "press_key", "eval", "emulate",
+  "drag", "upload_file",
 ]);
 
 export const isMutating = (method) => MUTATING.has(method);

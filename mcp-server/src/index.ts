@@ -3,6 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createRequire } from "node:module";
+import { statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { Bridge } from "./bridge.js";
 
 const PORT = Number(process.env.DISPATCH_PORT || 8765);
@@ -33,6 +35,15 @@ async function guard(fn: () => Promise<any>) {
 // There can be several granted tabs (the user grants them in the popup). Page
 // commands take an optional tabId: without it they act on the "current" tab,
 // with it — on any tab in the granted set, without switching the current one.
+// Dialogs can only be answered by a session opened BEFORE the action, so the
+// agent says up front what to do if the action opens one.
+const DIALOG = {
+  dialog: z.enum(["accept", "dismiss"]).optional().describe(
+    "If this action may open a JavaScript dialog (alert/confirm/prompt), answer it this way. " +
+    "Without it, a dialog freezes the page until the user answers it in the browser."),
+  promptText: z.string().optional().describe("Text to enter into a prompt() dialog when accepting"),
+};
+
 const TAB_ID = z.number().int().optional()
   .describe("id of a granted tab (granted=true in browser_tabs); omit = current tab");
 
@@ -158,31 +169,99 @@ server.registerTool(
 server.registerTool(
   "browser_click",
   {
-    description: "Click an element: either a ref from browser_snapshot or a CSS selector.",
+    description:
+      "Click an element: either a ref from browser_snapshot or a CSS selector. " +
+      "For buttons that ask “Are you sure?” pass dialog: \"accept\" (or \"dismiss\").",
     inputSchema: {
       ref: z.string().optional().describe("ref from snapshot, e.g. e12"),
       selector: z.string().optional().describe("CSS selector (if no ref)"),
       tabId: TAB_ID,
+      ...DIALOG,
     },
   },
-  async ({ ref, selector, tabId }) =>
-    guard(async () => text(await bridge.send("click", { ref, selector, tabId }))),
+  async ({ ref, selector, tabId, dialog, promptText }) =>
+    guard(async () => text(await bridge.send("click", { ref, selector, tabId, dialog, promptText }))),
 );
 
 server.registerTool(
   "browser_type",
   {
-    description: "Type text into a field (input/textarea/contenteditable) by ref or CSS selector.",
+    description:
+      "Type text into a field (input/textarea/contenteditable) by ref or CSS selector. " +
+      "For a <select>, text is the option's value or visible label.",
     inputSchema: {
       ref: z.string().optional().describe("ref from snapshot"),
       selector: z.string().optional().describe("CSS selector (if no ref)"),
-      text: z.string().describe("Text to type"),
+      text: z.string().describe("Text to type, or the option to pick in a <select>"),
       submit: z.boolean().optional().describe("Submit the form / press Enter after typing"),
+      tabId: TAB_ID,
+      ...DIALOG,
+    },
+  },
+  async ({ ref, selector, text: value, submit, tabId, dialog, promptText }) =>
+    guard(async () => text(await bridge.send("type", { ref, selector, text: value, submit, tabId, dialog, promptText }))),
+);
+
+server.registerTool(
+  "browser_hover",
+  {
+    description:
+      "Move the mouse over an element (real mouse event via CDP, so CSS :hover works) — " +
+      "reveals menus, tooltips and row actions that only appear on mouse-over. Top frame only. " +
+      "Allowed in read-only mode.",
+    inputSchema: {
+      ref: z.string().optional().describe("ref from snapshot"),
+      selector: z.string().optional().describe("CSS selector (if no ref)"),
       tabId: TAB_ID,
     },
   },
-  async ({ ref, selector, text: value, submit, tabId }) =>
-    guard(async () => text(await bridge.send("type", { ref, selector, text: value, submit, tabId }))),
+  async ({ ref, selector, tabId }) =>
+    guard(async () => text(await bridge.send("hover", { ref, selector, tabId }))),
+);
+
+server.registerTool(
+  "browser_drag",
+  {
+    description:
+      "Drag one element onto another: kanban cards, sortable lists, sliders, drop zones. " +
+      "Works for both mouse-driven widgets and native HTML5 drag-and-drop. Top frame only; " +
+      "the source is scrolled into view and the target must be visible at the same time.",
+    inputSchema: {
+      fromRef: z.string().optional().describe("ref of the element to drag"),
+      fromSelector: z.string().optional().describe("CSS selector of the element to drag (if no fromRef)"),
+      toRef: z.string().optional().describe("ref of the drop target"),
+      toSelector: z.string().optional().describe("CSS selector of the drop target (if no toRef)"),
+      tabId: TAB_ID,
+    },
+  },
+  async ({ fromRef, fromSelector, toRef, toSelector, tabId }) =>
+    guard(async () => text(await bridge.send("drag", { fromRef, fromSelector, toRef, toSelector, tabId }))),
+);
+
+server.registerTool(
+  "browser_upload_file",
+  {
+    description:
+      "Put local files into an <input type=file>, as if the user picked them. Paths must be absolute " +
+      "and exist on this machine. Styled upload buttons usually hide the real input — target it with " +
+      "selector \"input[type=file]\". Top frame only. Blocked in read-only mode.",
+    inputSchema: {
+      files: z.array(z.string()).min(1).describe("Absolute paths of the files to upload"),
+      ref: z.string().optional().describe("ref of the file input"),
+      selector: z.string().optional().describe("CSS selector of the file input (if no ref)"),
+      tabId: TAB_ID,
+    },
+  },
+  async ({ files, ref, selector, tabId }) =>
+    guard(async () => {
+      for (const f of files) {
+        if (!isAbsolute(f)) throw new Error(`not an absolute path: ${f}`);
+        let isFile = false;
+        try { isFile = statSync(f).isFile(); } catch { /* reported below */ }
+        if (!isFile) throw new Error(`no such file: ${f}`);
+      }
+      return text(await bridge.send("upload_file", { files, ref, selector, tabId }));
+    }),
 );
 
 server.registerTool(
@@ -242,10 +321,11 @@ server.registerTool(
     inputSchema: {
       key: z.string().describe("Key, e.g. Enter or a"),
       selector: z.string().optional().describe("CSS selector — focus it before pressing"),
+      ...DIALOG,
     },
   },
-  async ({ key, selector }) =>
-    guard(async () => text(await bridge.send("press_key", { key, selector }))),
+  async ({ key, selector, dialog, promptText }) =>
+    guard(async () => text(await bridge.send("press_key", { key, selector, dialog, promptText }))),
 );
 
 server.registerTool(

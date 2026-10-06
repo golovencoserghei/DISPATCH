@@ -39,8 +39,9 @@ export class MockWebSocket {
  * @param {Array}  [opts.tabs]     initial tabs
  * @param {object} [opts.storage]  initial chrome.storage.local
  * @param {object} [opts.scriptResult] what executeScript returns
+ * @param {Function} [opts.cdpHook] (tabId, method, params) — called on every CDP command, e.g. to emit events
  */
-export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true } } = {}) {
+export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true }, cdpHook } = {}) {
   const store = { ...storage };
   let tabList = tabs.map((t) => ({ active: false, windowId: 1, status: "complete", ...t }));
 
@@ -118,7 +119,9 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
     scripting: {
       async executeScript(opts) {
         calls.executeScript.push(opts);
-        const r = typeof scriptResult === "function" ? scriptResult(opts) : scriptResult;
+        // A function may return a promise — including one that never settles,
+        // which is how a page frozen by a JS dialog is simulated.
+        const r = await (typeof scriptResult === "function" ? scriptResult(opts) : scriptResult);
         // The stub may return a ready array of frames [{frameId, result}] —
         // that's how multi-frame scenarios are tested (snapshot with allFrames).
         return Array.isArray(r) ? r : [{ frameId: 0, result: r }];
@@ -137,13 +140,15 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
         attached.delete(tabId);
         cb(done);
       },
-      sendCommand({ tabId }, method, _params, done) {
-        calls.debugger.push({ op: "send", tabId, method });
+      sendCommand({ tabId }, method, params, done) {
+        calls.debugger.push({ op: "send", tabId, method, params });
+        cdpHook?.(tabId, method, params);
         if (!attached.has(tabId)) return cb(done, "Debugger is not attached to the tab with id: " + tabId);
         // replies to commands whose fields the core reads
         if (method === "Page.getLayoutMetrics") return cb(done, null, { cssContentSize: { width: 800, height: 2400 } });
         if (method === "Page.captureScreenshot") return cb(done, null, { data: "PNGDATA" });
         if (method === "Network.getResponseBody") return cb(done, null, { body: "response body", base64Encoded: false });
+        if (method === "Runtime.evaluate") return cb(done, null, { result: { type: "object", objectId: "obj-1" } });
         cb(done, null, {});
       },
       onEvent: { addListener: () => {} },
@@ -166,8 +171,8 @@ export async function cmd(d, ws, method, params = {}) {
 }
 
 /** Start the core with mocks: settings applied, connection open. */
-export async function boot(createDispatcher, { storage = {}, tabs = [], scriptResult } = {}) {
-  const chrome = mockChrome({ tabs, storage: { enabled: true, port: 8765, ...storage }, scriptResult });
+export async function boot(createDispatcher, { storage = {}, tabs = [], scriptResult, cdpHook } = {}) {
+  const chrome = mockChrome({ tabs, storage: { enabled: true, port: 8765, ...storage }, scriptResult, cdpHook });
   const d = createDispatcher({ chrome, WebSocketImpl: MockWebSocket, userAgent: "test-ua", now: () => 1700000000000 });
   await d.init();
   const ws = MockWebSocket.last;
