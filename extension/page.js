@@ -185,6 +185,14 @@ export function pageShield(mode) {
   return { ok: true, shield: true, mode: full ? "full" : "readonly" };
 }
 
+/**
+ * Адрес документа фрейма. Нужен, чтобы проверить allowlist ПЕРЕД действием во
+ * вложенном фрейме: у него может быть совсем другой хост, чем у самой вкладки.
+ */
+export function pageHref() {
+  return { ok: true, url: location.href };
+}
+
 export function pageScroll(selector, dx, dy, toBottom) {
   const el = selector ? document.querySelector(selector) : (document.scrollingElement || document.documentElement);
   if (!el) return { ok: false, error: "элемент прокрутки не найден" };

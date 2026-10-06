@@ -119,7 +119,9 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
       async executeScript(opts) {
         calls.executeScript.push(opts);
         const r = typeof scriptResult === "function" ? scriptResult(opts) : scriptResult;
-        return [{ frameId: 0, result: r }];
+        // Заглушка может вернуть готовый массив кадров [{frameId, result}] —
+        // так тестируются многофреймовые сценарии (snapshot с allFrames).
+        return Array.isArray(r) ? r : [{ frameId: 0, result: r }];
       },
     },
     debugger: {

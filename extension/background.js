@@ -25,7 +25,9 @@ chrome.tabs.onRemoved.addListener((tabId) => d.onTabRemoved(tabId));
 chrome.tabs.onUpdated.addListener((tabId, info) => d.onTabUpdated(tabId, info));
 
 // Резервный путь на случай выгрузки service worker'а.
-chrome.alarms.create("dispatch-keepalive", { periodInMinutes: 0.4 });
+// 0.5 мин = 30 с — меньше ставить бессмысленно: Chrome всё равно поднимает
+// период до 30 секунд.
+chrome.alarms.create("dispatch-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === "dispatch-keepalive") d.onKeepalive(); });
 
 d.init();

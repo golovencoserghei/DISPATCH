@@ -12,7 +12,13 @@
     .muted { opacity: 0.65; font-size: 12px; }
     button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #8886; background: #7773; cursor: pointer; }
     button:hover { background: #7775; }
-    .granted { font-weight: 600; word-break: break-word; }
+    .granted { margin: 4px 0; }
+    .granted .tab { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+    .granted .tab:hover { background: #7772; }
+    .granted .tab.current { font-weight: 600; }
+    .granted .mark { width: 14px; text-align: center; color: #2c8a3d; }
+    .granted .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .granted .x { padding: 0 6px; line-height: 1.2; }
     textarea { width: 100%; box-sizing: border-box; height: 48px; resize: vertical; font: 12px monospace; }
     input[type=number] { width: 70px; }
     hr { border: none; border-top: 1px solid #8884; margin: 10px 0; }
@@ -45,10 +51,11 @@
   <hr />
 
   <div class="row">
-    <span>Доступ к вкладке</span>
-    <button id="revokeAccess" title="Забрать доступ">✕</button>
+    <span>Вкладки с доступом</span>
+    <button id="revokeAccess" title="Забрать доступ у всех">✕ все</button>
   </div>
-  <div class="granted muted" id="granted">— нет —</div>
+  <div class="granted" id="granted"><span class="muted">— нет —</span></div>
+  <div class="muted" style="font-size:11px">◉ — текущая (команды без tabId идут на неё), клик по строке делает вкладку текущей. Агент читает любую из списка по tabId.</div>
   <div class="row"><button id="grant">Дать доступ к этой вкладке</button></div>
 
   <hr />

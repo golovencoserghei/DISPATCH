@@ -9,7 +9,7 @@
 // background.js — тонкая обвязка: отдаёт сюда настоящий chrome и вешает листенеры.
 
 import {
-  pageSnapshot, pageGetHtml, pageEval, pageFocus,
+  pageSnapshot, pageGetHtml, pageEval, pageFocus, pageHref,
   pageClick, pageType, pageWaitFor, pageExtract, pageScroll, pageShield,
 } from "./page.js";
 import { methodAllowed, hostAllowed, urlAllowed, hostOf, parseRef } from "./policy.js";
@@ -74,8 +74,10 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     port: DEFAULT_PORT,
     token: "",             // опциональный секрет; нужен, если сервер запущен с DISPATCH_TOKEN
     mode: "full",          // "full" | "readonly" — read-only блокирует изменяющие команды
-    grantedTabId: null,    // вкладка, на которой разрешено действовать
-    grantedTitle: "",
+    // Вкладок с доступом может быть НЕСКОЛЬКО: человек раздаёт доступ страницам,
+    // которые агент должен сопоставить, а агент читает их по tabId, не переключаясь.
+    grantedTabs: [],       // id вкладок с доступом, в порядке выдачи
+    grantedTabId: null,    // «текущая» из них: на ней работают команды без tabId
     allowlist: [],         // список хостов-паттернов; пусто = любой
     log: [],               // кольцевой буфер последних действий
   };
@@ -98,14 +100,16 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   }
 
   async function loadSettings() {
-    const s = await chrome.storage.local.get(["enabled", "port", "token", "mode", "allowlist", "grantedTabId", "grantedTitle"]);
+    const s = await chrome.storage.local.get(["enabled", "port", "token", "mode", "allowlist", "grantedTabs", "grantedTabId"]);
     state.enabled = !!s.enabled;
     state.port = s.port || DEFAULT_PORT;
     state.token = s.token || "";
     state.mode = s.mode === "readonly" ? "readonly" : "full";
     state.allowlist = Array.isArray(s.allowlist) ? s.allowlist : [];
-    state.grantedTabId = s.grantedTabId ?? null;
-    state.grantedTitle = s.grantedTitle || "";
+    // Старый формат хранил одну grantedTabId — она же и единственная вкладка набора.
+    const ids = Array.isArray(s.grantedTabs) ? s.grantedTabs : (s.grantedTabId != null ? [s.grantedTabId] : []);
+    state.grantedTabs = ids.filter((id) => Number.isInteger(id));
+    state.grantedTabId = state.grantedTabs.includes(s.grantedTabId) ? s.grantedTabId : (state.grantedTabs.at(-1) ?? null);
   }
 
   function saveSettings() {
@@ -115,28 +119,30 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       token: state.token,
       mode: state.mode,
       allowlist: state.allowlist,
+      grantedTabs: state.grantedTabs,
       grantedTabId: state.grantedTabId,
-      grantedTitle: state.grantedTitle,
     });
   }
 
-  // ── бейдж на иконке: цвет = статус связи, «◉» на вкладке с доступом ─────────
-  let lastGrantedBadge = null;
+  const isGranted = (tabId) => state.grantedTabs.includes(tabId);
+
+  // ── бейдж на иконке: цвет = статус связи, «◉» на вкладках с доступом ────────
+  let badgedTabs = new Set();
   const safe = (p) => { try { if (p && p.catch) p.catch(() => {}); } catch { /* noop */ } };
 
   function updateBadge() {
     const color = !state.enabled ? "#888888" : (state.connected ? "#2c8a3d" : "#bb3333");
     safe(chrome.action.setBadgeBackgroundColor({ color }));
     safe(chrome.action.setBadgeText({ text: !state.enabled ? "" : (state.connected ? "on" : "off") }));
-    // снять пометку со старой вкладки с доступом
-    if (lastGrantedBadge != null && lastGrantedBadge !== state.grantedTabId) {
-      safe(chrome.action.setBadgeText({ text: "", tabId: lastGrantedBadge }));
-      lastGrantedBadge = null;
+    // снять пометку с вкладок, потерявших доступ
+    for (const id of badgedTabs) {
+      if (!isGranted(id)) safe(chrome.action.setBadgeText({ text: "", tabId: id }));
     }
-    if (state.grantedTabId != null) {
-      safe(chrome.action.setBadgeText({ text: "◉", tabId: state.grantedTabId }));
-      safe(chrome.action.setBadgeBackgroundColor({ color: "#2c8a3d", tabId: state.grantedTabId }));
-      lastGrantedBadge = state.grantedTabId;
+    badgedTabs = new Set(state.grantedTabs);
+    for (const id of state.grantedTabs) {
+      // «◉» — текущая, «○» — остальные вкладки с доступом
+      safe(chrome.action.setBadgeText({ text: id === state.grantedTabId ? "◉" : "○", tabId: id }));
+      safe(chrome.action.setBadgeBackgroundColor({ color: "#2c8a3d", tabId: id }));
     }
   }
 
@@ -228,14 +234,24 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     if (state.grantedTabId == null) throw new Error("Нет вкладки с доступом — открой popup и нажми «Дать доступ к этой вкладке».");
   }
 
-  async function grantedTab() {
+  /**
+   * Вкладка, на которой будет работать команда. Без tabId — текущая; с tabId —
+   * та, что указана, но ТОЛЬКО если она в наборе вкладок с доступом: доступ
+   * к остальным по-прежнему выдаёт человек в popup или сам агент через select_tab.
+   * В обоих случаях вкладка сверяется с allowlist прямо сейчас.
+   */
+  async function grantedTab(tabId) {
     requireGranted();
+    const id = tabId ?? state.grantedTabId;
+    if (!isGranted(id)) {
+      throw new Error(`Вкладка #${id} без доступа. Вкладки с доступом: ${state.grantedTabs.map((x) => "#" + x).join(", ") || "нет"} — дай доступ в popup или через browser_select_tab.`);
+    }
     let tab;
     try {
-      tab = await chrome.tabs.get(state.grantedTabId);
+      tab = await chrome.tabs.get(id);
     } catch {
-      state.grantedTabId = null; saveSettings();
-      throw new Error("Вкладка с доступом закрыта — дай доступ заново.");
+      forgetTab(id);
+      throw new Error(`Вкладка с доступом #${id} закрыта — дай доступ заново.`);
     }
     if (state.allowlist.length) {
       const host = hostOf(tab.url); // null для about:, chrome: и прочих непарсируемых
@@ -262,17 +278,49 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   const showShield = (tabId) => paintShield(tabId, state.mode);
   const hideShield = (tabId) => paintShield(tabId, null);
 
-  /** Сменить вкладку с доступом; закрыть debug-сессию, если она на другой вкладке. */
+  /**
+   * Дать вкладке доступ и сделать её текущей. Остальные вкладки набора доступ
+   * НЕ теряют. Debug-сессия привязана к текущей вкладке: если она шла на другой —
+   * закрывается (буферы перехвата — про одну страницу, смешивать их нельзя).
+   */
   async function grantAccess(tab) {
     if (dbg.attached && dbg.tabId !== tab.id) await releasePersistent();
-    const prev = state.grantedTabId;
+    if (!isGranted(tab.id)) state.grantedTabs.push(tab.id);
     state.grantedTabId = tab.id;
-    state.grantedTitle = tab.title || "";
     saveSettings();
     updateBadge();
-    if (prev != null && prev !== tab.id) await hideShield(prev);
     await showShield(tab.id);
   }
+
+  /** Убрать вкладку из набора (в памяти); текущей становится последняя выданная. */
+  function forgetTab(tabId) {
+    state.grantedTabs = state.grantedTabs.filter((id) => id !== tabId);
+    if (state.grantedTabId === tabId) state.grantedTabId = state.grantedTabs.at(-1) ?? null;
+    saveSettings();
+    updateBadge();
+  }
+
+  /** Забрать доступ у одной вкладки: снять перехват, если он на ней, и шильдик. */
+  async function revokeTab(tabId) {
+    if (!isGranted(tabId)) return;
+    if (dbg.attached && dbg.tabId === tabId) await releasePersistent();
+    forgetTab(tabId);
+    await hideShield(tabId);
+  }
+
+  /** Список вкладок с доступом с живыми title/url — для popup и status. */
+  async function grantedTabsInfo() {
+    const out = [];
+    for (const id of state.grantedTabs) {
+      try {
+        const t = await chrome.tabs.get(id);
+        out.push({ id, title: t.title || "", url: t.url || "", current: id === state.grantedTabId });
+      } catch { /* закрылась — onTabRemoved уберёт */ }
+    }
+    return out;
+  }
+
+  const forEachGranted = (fn) => Promise.all(state.grantedTabs.map(fn));
 
   function requireInjectable(tab) {
     if (!isInjectable(tab.url)) {
@@ -280,10 +328,33 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     }
   }
 
+  /**
+   * allowlist сверяется с URL ВЕРХНЕГО фрейма вкладки, а действие по ref вида
+   * «3:e12» уходит внутрь вложенного — а там может быть чужой хост (реклама,
+   * встроенный виджет, чей угодно iframe). Поэтому перед действием во фрейме
+   * спрашиваем его собственный location и проверяем отдельно.
+   */
+  async function requireFrameAllowed(tabId, frameId) {
+    if (!state.allowlist.length) return;
+    let url = null;
+    try {
+      const r = await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [frameId] }, world: "ISOLATED", func: pageHref,
+      });
+      url = r && r[0] && r[0].result ? r[0].result.url : null;
+    } catch {
+      throw new Error(`Фрейм #${frameId} недоступен — сделай browser_snapshot заново.`);
+    }
+    if (!urlAllowed(url, state.allowlist)) {
+      throw new Error(`Фрейм #${frameId} («${hostOf(url) ?? url ?? "?"}») не в allowlist. Разреши его хост в popup или очисти список.`);
+    }
+  }
+
   // ── исполнение в странице (chrome.scripting) ───────────────────────────────
-  async function runInPage(func, args = [], world = "ISOLATED", frameId = 0) {
-    const tab = await grantedTab();
+  async function runInPage(func, args = [], world = "ISOLATED", frameId = 0, tabId = undefined) {
+    const tab = await grantedTab(tabId);
     requireInjectable(tab);
+    if (frameId) await requireFrameAllowed(tab.id, frameId);
     const target = frameId ? { tabId: tab.id, frameIds: [frameId] } : { tabId: tab.id };
     const res = await chrome.scripting.executeScript({ target, world, func, args });
     const r = res && res[0] ? res[0].result : undefined;
@@ -381,6 +452,37 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
   function requirePersistent() {
     if (!dbg.persistent) throw new Error("Перехват не включён — сначала вызови browser_debug_start.");
+  }
+
+  /**
+   * Гейт на ЧТЕНИЕ буферов перехвата. Мало того, что сессия включена: она должна
+   * идти на вкладке с доступом, а та — проходить allowlist прямо сейчас.
+   * Без этого allowlist обходился бы в обе стороны: буферы копятся сами, вне
+   * команд, поэтому одной проверки в момент debug_start недостаточно.
+   */
+  async function requireDebugAccess() {
+    const tab = await grantedTab();
+    requirePersistent();
+    if (dbg.tabId !== tab.id) {
+      throw new Error(`Перехват идёт на вкладке #${dbg.tabId}, а доступ выдан #${tab.id} — вызови browser_debug_start заново.`);
+    }
+    return tab;
+  }
+
+  /**
+   * Вкладка с доступом ушла на хост вне allowlist — рвём перехват и чистим
+   * буферы. Команды-то проверяются перед выполнением, а вот CDP пишет сеть и
+   * консоль сам по себе: без этого достаточно было бы увести вкладку на чужой
+   * сайт, чтобы его трафик осел в буфере.
+   */
+  async function dropCaptureOutsideAllowlist(tabId) {
+    if (!state.allowlist.length) return;
+    if (!dbg.persistent || dbg.tabId !== tabId) return;
+    let url = null;
+    try { url = (await chrome.tabs.get(tabId)).url; } catch { return; }
+    if (urlAllowed(url, state.allowlist)) return;
+    await releasePersistent();
+    pushLog(`перехват снят: вкладка ушла на «${hostOf(url) ?? url ?? "?"}» вне allowlist`);
   }
 
   // ── обработка CDP-событий ──────────────────────────────────────────────────
@@ -565,12 +667,15 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   // ── обработчики команд ─────────────────────────────────────────────────────
   const handlers = {
     async status() {
+      const granted = await grantedTabsInfo();
+      const current = granted.find((t) => t.current);
       return {
         connected: state.connected,
         enabled: state.enabled,
         mode: state.mode,
         grantedTabId: state.grantedTabId,
-        grantedTitle: state.grantedTitle,
+        grantedTitle: current ? current.title : "",
+        grantedTabs: granted,
         allowlist: state.allowlist,
         debug: { active: dbg.persistent, tabId: dbg.tabId, net: dbg.net.length, console: dbg.console.length, emulation: dbg.emulation },
       };
@@ -579,7 +684,9 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     async tabs() {
       const tabs = await chrome.tabs.query({});
       return tabs.map((t) => ({
-        id: t.id, title: t.title, url: t.url, active: t.active, granted: t.id === state.grantedTabId,
+        id: t.id, title: t.title, url: t.url, active: t.active,
+        granted: isGranted(t.id),            // можно читать/действовать по tabId
+        current: t.id === state.grantedTabId, // на ней работают команды без tabId
       }));
     },
 
@@ -591,34 +698,42 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         throw new Error(`Доступ к «${tab.url || "?"}» запрещён: хост не в allowlist. Разреши его в popup или очисти список.`);
       }
       await grantAccess(tab);
-      return { grantedTabId: tab.id, title: tab.title, url: tab.url };
+      return { grantedTabId: tab.id, title: tab.title, url: tab.url, grantedTabs: state.grantedTabs };
     },
 
     async open_tab({ url, active, grant }) {
-      if (url && !urlAllowed(url, state.allowlist)) {
-        throw new Error(`Открытие «${url}» запрещено: хост не в allowlist. Разреши его в popup или очисти список.`);
+      // Проверяем и пустой url: без него откроется about:blank, у которого хоста
+      // нет, — при непустом allowlist заводить такую вкладку нельзя.
+      if (!urlAllowed(url || "", state.allowlist)) {
+        throw new Error(`Открытие «${url || "пустой вкладки"}» запрещено: хост не в allowlist. Разреши его в popup или очисти список.`);
       }
       const tab = await chrome.tabs.create({ url: url || undefined, active: active !== false });
       // По умолчанию даём доступ новой вкладке — агент её явно открыл.
       if (grant !== false) await grantAccess(tab);
       await waitComplete(tab.id, 30000).catch(() => {});
       const t = await chrome.tabs.get(tab.id);
-      return { tabId: t.id, url: t.url, title: t.title, granted: t.id === state.grantedTabId };
+      return { tabId: t.id, url: t.url, title: t.title, granted: isGranted(t.id) };
     },
 
     // Закрыть можно ТОЛЬКО вкладку с доступом: иначе агент мог бы закрыть любую
     // вкладку браузера по чужому id. Чтобы закрыть другую — сначала select_tab.
     async close_tab({ tabId }) {
-      const tab = await grantedTab();
-      if (tabId != null && tabId !== tab.id) {
-        throw new Error(`Закрыть можно только вкладку с доступом (#${tab.id}), а не #${tabId}. Сначала дай доступ через browser_select_tab.`);
+      let tab;
+      try {
+        tab = await grantedTab(tabId);
+      } catch (e) {
+        if (tabId != null && !isGranted(tabId)) {
+          throw new Error(`Закрыть можно только вкладку с доступом (${state.grantedTabs.map((x) => "#" + x).join(", ") || "нет"}), а не #${tabId}. Сначала дай доступ через browser_select_tab.`);
+        }
+        throw e;
       }
       await chrome.tabs.remove(tab.id);
-      return { closed: tab.id };
+      forgetTab(tab.id); // не ждать onTabRemoved: следующая команда уже должна видеть новый набор
+      return { closed: tab.id, grantedTabs: state.grantedTabs, grantedTabId: state.grantedTabId };
     },
 
-    async navigate({ url }) {
-      const tab = await grantedTab();
+    async navigate({ url, tabId }) {
+      const tab = await grantedTab(tabId);
       if (!urlAllowed(url, state.allowlist)) {
         throw new Error(`Переход на «${url}» запрещён: хост не в allowlist. Разреши его в popup или очисти список.`);
       }
@@ -628,8 +743,8 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       return { url: t.url, title: t.title };
     },
 
-    async snapshot() {
-      const tab = await grantedTab();
+    async snapshot({ tabId } = {}) {
+      const tab = await grantedTab(tabId);
       requireInjectable(tab);
       // allFrames: снимок со ВСЕХ инъектируемых фреймов; ref = "<frameId>:<localRef>".
       const results = await chrome.scripting.executeScript({
@@ -637,51 +752,57 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       });
       const elements = [];
       let url = tab.url, title = tab.title || "";
+      let skippedFrames = 0;
       for (const r of results) {
         const v = r.result;
         if (!v || !v.ok) continue;
-        if (r.frameId === 0) { url = v.url; title = v.title; }
+        if (r.frameId === 0) {
+          url = v.url; title = v.title; // верхний фрейм уже проверен grantedTab()
+        } else if (!urlAllowed(v.url, state.allowlist)) {
+          skippedFrames++; // вложенный фрейм на чужом хосте — его содержимое не отдаём
+          continue;
+        }
         for (const el of v.elements) elements.push({ ...el, ref: `${r.frameId}:${el.ref}`, frameId: r.frameId });
       }
-      return { ok: true, url, title, count: elements.length, frames: results.length, elements };
+      return { ok: true, tabId: tab.id, url, title, count: elements.length, frames: results.length, skippedFrames, elements };
     },
 
-    async get_html({ selector }) {
-      return runInPage(pageGetHtml, [selector || null], "ISOLATED");
+    async get_html({ selector, tabId }) {
+      return runInPage(pageGetHtml, [selector || null], "ISOLATED", 0, tabId);
     },
 
-    async eval({ expression }) {
-      return runInPage(pageEval, [expression], "MAIN");
+    async eval({ expression, tabId }) {
+      return runInPage(pageEval, [expression], "MAIN", 0, tabId);
     },
 
-    async click({ ref, selector }) {
+    async click({ ref, selector, tabId }) {
       const { frameId, localRef } = parseRef(ref);
-      return runInPage(pageClick, [localRef, selector || null], "ISOLATED", frameId);
+      return runInPage(pageClick, [localRef, selector || null], "ISOLATED", frameId, tabId);
     },
 
-    async type({ ref, selector, text, submit }) {
+    async type({ ref, selector, text, submit, tabId }) {
       const { frameId, localRef } = parseRef(ref);
-      return runInPage(pageType, [localRef, selector || null, text, !!submit], "ISOLATED", frameId);
+      return runInPage(pageType, [localRef, selector || null, text, !!submit], "ISOLATED", frameId, tabId);
     },
 
-    async wait_for({ selector, timeoutMs }) {
-      return runInPage(pageWaitFor, [selector || null, timeoutMs || 10000], "ISOLATED");
+    async wait_for({ selector, timeoutMs, tabId }) {
+      return runInPage(pageWaitFor, [selector || null, timeoutMs || 10000], "ISOLATED", 0, tabId);
     },
 
-    async extract({ container, fields, multiple }) {
-      return runInPage(pageExtract, [container || null, fields || {}, !!multiple], "ISOLATED");
+    async extract({ container, fields, multiple, tabId }) {
+      return runInPage(pageExtract, [container || null, fields || {}, !!multiple], "ISOLATED", 0, tabId);
     },
 
-    async scroll({ selector, dx, dy, toBottom }) {
-      return runInPage(pageScroll, [selector || null, dx || 0, dy || 0, !!toBottom], "ISOLATED");
+    async scroll({ selector, dx, dy, toBottom, tabId }) {
+      return runInPage(pageScroll, [selector || null, dx || 0, dy || 0, !!toBottom], "ISOLATED", 0, tabId);
     },
 
     async press_key(params) {
       return pressKey(params);
     },
 
-    async screenshot({ fullPage }) {
-      const tab = await grantedTab();
+    async screenshot({ fullPage, tabId }) {
+      const tab = await grantedTab(tabId);
       requireInjectable(tab);
       if (fullPage) return fullPageShot(tab.id);
       // Видимая область: для активной вкладки — быстрый путь без баннера.
@@ -710,7 +831,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     },
 
     async console_logs({ level, clear }) {
-      requirePersistent();
+      await requireDebugAccess();
       let items = dbg.console;
       if (level) items = items.filter((e) => String(e.level).toLowerCase() === String(level).toLowerCase());
       const logs = items.slice(-200);
@@ -719,7 +840,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     },
 
     async network({ filter, clear }) {
-      requirePersistent();
+      await requireDebugAccess();
       let items = dbg.net;
       if (filter) items = items.filter((r) => (r.url || "").includes(filter));
       const requests = items.map((r) => ({
@@ -732,7 +853,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     },
 
     async network_body({ requestId }) {
-      requirePersistent();
+      await requireDebugAccess();
       if (!requestId) throw new Error("не указан requestId (возьми из browser_network)");
       const r = await dbgSend(dbg.tabId, "Network.getResponseBody", { requestId });
       const body = r.body || "";
@@ -756,7 +877,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
           hasToken: !!state.token,
           mode: state.mode,
           grantedTabId: state.grantedTabId,
-          grantedTitle: state.grantedTitle,
+          grantedTabs: await grantedTabsInfo(),
           allowlist: state.allowlist,
           log: state.log,
           debug: { active: dbg.persistent, tabId: dbg.tabId, net: dbg.net.length, console: dbg.console.length },
@@ -764,8 +885,8 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       case "setEnabled":
         state.enabled = !!msg.value;
         saveSettings();
-        if (state.enabled) { connect(); await showShield(state.grantedTabId); }
-        else { await disconnect(); await hideShield(state.grantedTabId); } // выключен = связи нет и шильдика тоже
+        if (state.enabled) { connect(); await forEachGranted(showShield); }
+        else { await disconnect(); await forEachGranted(hideShield); } // выключен = связи нет и шильдика тоже
         pushLog(state.enabled ? "включено" : "выключено");
         updateBadge();
         return { ok: true };
@@ -785,25 +906,42 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         state.mode = msg.value === "readonly" ? "readonly" : "full";
         saveSettings();
         pushLog(`режим: ${state.mode}`);
-        if (state.enabled) await showShield(state.grantedTabId); // перерисовать под новый режим
+        if (state.enabled) await forEachGranted(showShield); // перерисовать под новый режим
         return { ok: true };
       case "grantActive": {
+        // Добавляет активную вкладку к набору (и делает её текущей); ранее
+        // выданные вкладки доступ сохраняют — так и собирается набор для анализа.
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
         if (!tab) return { ok: false, error: "нет активной вкладки" };
         await grantAccess(tab);
         pushLog(`доступ выдан: ${tab.title}`);
-        return { ok: true, grantedTabId: tab.id, grantedTitle: tab.title };
+        return { ok: true, grantedTabId: tab.id, grantedTitle: tab.title, grantedTabs: state.grantedTabs };
+      }
+      case "setCurrent": {
+        // Сменить текущую вкладку среди уже выданных — без выдачи новых.
+        const id = Number(msg.tabId);
+        if (!isGranted(id)) return { ok: false, error: `вкладка #${id} без доступа` };
+        let tab;
+        try { tab = await chrome.tabs.get(id); } catch { forgetTab(id); return { ok: false, error: "вкладка закрыта" }; }
+        await grantAccess(tab);
+        return { ok: true, grantedTabId: id };
       }
       case "revokeAccess": {
+        // С tabId — забрать у одной вкладки; без — у всех сразу.
+        if (msg.tabId != null) {
+          await revokeTab(Number(msg.tabId));
+          pushLog(`доступ забран у #${msg.tabId}`);
+          return { ok: true, grantedTabs: state.grantedTabs };
+        }
         if (dbg.attached) await releasePersistent();
-        const was = state.grantedTabId;
+        const were = state.grantedTabs.slice();
+        state.grantedTabs = [];
         state.grantedTabId = null;
-        state.grantedTitle = "";
         saveSettings();
-        pushLog("доступ забран");
+        pushLog("доступ забран у всех вкладок");
         updateBadge();
-        await hideShield(was);
-        return { ok: true };
+        await Promise.all(were.map(hideShield));
+        return { ok: true, grantedTabs: [] };
       }
       case "stopDebug":
         await releasePersistent();
@@ -813,6 +951,8 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         state.allowlist = String(msg.value || "")
           .split("\n").map((s) => s.trim()).filter(Boolean);
         saveSettings();
+        // Новый список может запрещать ровно то, что перехватывается прямо сейчас.
+        if (dbg.persistent && dbg.tabId != null) await dropCaptureOutsideAllowlist(dbg.tabId);
         return { ok: true, allowlist: state.allowlist };
       case "reconnect":
         if (state.ws) try { state.ws.close(); } catch { /* noop */ }
@@ -826,19 +966,26 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   // ── реакция на закрытие вкладок ────────────────────────────────────────────
   function onTabRemoved(tabId) {
     if (tabId === dbg.tabId) { dbg.attached = false; dbg.persistent = false; dbg.tabId = null; }
-    if (tabId === state.grantedTabId) {
-      state.grantedTabId = null; state.grantedTitle = ""; saveSettings();
-      pushLog("вкладка с доступом закрыта");
+    if (isGranted(tabId)) {
+      forgetTab(tabId);
+      pushLog(`вкладка с доступом #${tabId} закрыта`);
     }
     updateBadge();
   }
 
-  /** Навигация стирает шильдик вместе со старым документом — рисуем заново. */
-  function onTabUpdated(tabId, info) {
-    if (!state.enabled) return;
-    if (tabId !== state.grantedTabId) return;
-    if (info.status !== "complete") return;
-    showShield(tabId);
+  /**
+   * Навигация стирает шильдик вместе со старым документом — рисуем заново.
+   * И это же единственный момент, когда вкладка с доступом может уехать за
+   * пределы allowlist: тогда перехват надо снять сразу, не дожидаясь команды.
+   */
+  async function onTabUpdated(tabId, info) {
+    try {
+      if (!isGranted(tabId)) return;
+      if (info.url || info.status === "complete") await dropCaptureOutsideAllowlist(tabId);
+      if (!state.enabled) return;
+      if (info.status !== "complete") return;
+      await showShield(tabId);
+    } catch { /* листенер браузера: наверх бросать нечему */ }
   }
 
   /** Резервный путь: alarm поднимает связь, если service worker выгружали. */
@@ -849,7 +996,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   async function init() {
     await loadSettings();
     updateBadge();
-    if (state.enabled) { connect(); showShield(state.grantedTabId); }
+    if (state.enabled) { connect(); forEachGranted(showShield); }
     pushLog("service worker запущен");
   }
 

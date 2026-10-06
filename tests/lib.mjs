@@ -58,7 +58,8 @@ export function startServer({ port, env } = {}) {
  * Фейковое «расширение»: подключается к WS-серверу и отвечает на команды.
  * silent=true — принимать команды и НЕ отвечать (для проверки поведения при разрыве).
  */
-export function fakeExtension(port, { origin, token = "", protocolVersion = 1, onCommand, silent = false } = {}) {
+export function fakeExtension(port, { origin = "chrome-extension://dispatch-test", token = "", protocolVersion = 1, onCommand, silent = false } = {}) {
+  // origin: null | "" — вообще не слать заголовок Origin (так выглядит локальный процесс).
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, origin ? { origin } : {});
   const state = { opened: false, closed: false };
   ws.on("open", () => {

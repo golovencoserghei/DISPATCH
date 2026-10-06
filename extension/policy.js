@@ -3,8 +3,12 @@
 
 // Изменяющие команды: действие на сайте, навигация или произвольный код.
 // В режиме read-only они блокируются.
+//
+// «emulate» здесь тоже не случайно: подмена viewport/User-Agent/геолокации —
+// это ДЕЙСТВИЕ, страница начинает видеть другое окружение. Снять эмуляцию из
+// read-only нельзя, для этого есть кнопка «Стоп отладки» в popup.
 export const MUTATING = new Set([
-  "navigate", "open_tab", "close_tab", "click", "type", "press_key", "eval",
+  "navigate", "open_tab", "close_tab", "click", "type", "press_key", "eval", "emulate",
 ]);
 
 export const isMutating = (method) => MUTATING.has(method);

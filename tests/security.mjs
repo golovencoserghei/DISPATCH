@@ -10,17 +10,31 @@ async function main() {
   const t = checker();
   let ok = true;
 
-  // ── A. Без токена ──
-  console.log("\n▶ security A: сервер без токена");
+  // ── A. Кого пускает рукопожатие ──
+  // Проверка — ALLOWLIST, а не «всё кроме http(s)»: opaque origin («null» у
+  // <iframe sandbox>) и file:// раньше проходили, а это ровно веб-страница.
+  console.log("\n▶ security A: allowlist origin'ов на рукопожатии");
   const A = startServer({ port: 8782 });
   await wait(1300); await A.initialize();
 
-  const evil = fakeExtension(8782, { origin: "https://evil.example" });
-  await wait(800);
-  t.check("веб-origin отклонён на рукопожатии", !evil.state.opened, evil.state);
-  t.check("после веб-origin клиент не подключён", !(await connected(A)));
+  /** Подключиться с данным Origin и вернуть, приняли ли соединение. */
+  async function accepts(origin) {
+    const c = fakeExtension(8782, { origin });
+    await wait(700);
+    const opened = c.state.opened;
+    c.close();
+    await wait(250);
+    return opened;
+  }
 
-  // Клиент без hello не должен считаться готовым — шлём hello вручную позже.
+  t.check("веб-origin отклонён", (await accepts("https://evil.example")) === false);
+  t.check("«null» (iframe sandbox, opaque origin) отклонён", (await accepts("null")) === false);
+  t.check("file:// отклонён", (await accepts("file://")) === false);
+  t.check("chrome-extension:// пускается", (await accepts("chrome-extension://abcdef")) === true);
+  t.check("локальный процесс без заголовка Origin пускается", (await accepts(null)) === true);
+  t.check("после всех отказов клиент не подключён", !(await connected(A)));
+
+  // Клиент считается готовым только после валидного hello.
   const late = fakeExtension(8782, { protocolVersion: 1 });
   await wait(600);
   t.check("после валидного hello клиент готов", await connected(A));
@@ -36,6 +50,12 @@ async function main() {
   await wait(700);
   t.check("неверный токен не пускает", !(await connected(B)));
   t.check("неверный токен → сервер закрыл соединение", bad.state.closed, bad.state);
+
+  const empty = fakeExtension(8783, { token: "" });
+  await wait(700);
+  t.check("пустой токен не пускает", !(await connected(B)));
+  empty.close();
+  await wait(300);
 
   const good = fakeExtension(8783, { token: "s3cret" });
   await wait(700);

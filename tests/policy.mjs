@@ -13,8 +13,13 @@ t.check("readonly пускает snapshot", methodAllowed("snapshot", "readonly"
 t.check("readonly пускает screenshot", methodAllowed("screenshot", "readonly") === true);
 t.check("readonly пускает scroll", methodAllowed("scroll", "readonly") === true);
 t.check("readonly пускает network", methodAllowed("network", "readonly") === true);
+// Эмуляция меняет то, что видит страница (viewport/UA/геолокация) — это действие.
+t.check("readonly блокирует emulate", methodAllowed("emulate", "readonly") === false);
+t.check("readonly пускает debug_start (наблюдение)", methodAllowed("debug_start", "readonly") === true);
+t.check("readonly пускает console_logs", methodAllowed("console_logs", "readonly") === true);
 t.check("full пускает click", methodAllowed("click", "full") === true);
 t.check("full пускает eval", methodAllowed("eval", "full") === true);
+t.check("full пускает emulate", methodAllowed("emulate", "full") === true);
 
 // matchHost
 t.check("точный хост совпал", matchHost("example.com", "example.com") === true);
@@ -46,6 +51,7 @@ t.check("непарсируемый URL при непустом allowlist = за
 
 // isMutating
 t.check("isMutating(type) = true", isMutating("type") === true);
+t.check("isMutating(emulate) = true", isMutating("emulate") === true);
 t.check("isMutating(snapshot) = false", isMutating("snapshot") === false);
 
 // parseRef (iframe-адресация)
