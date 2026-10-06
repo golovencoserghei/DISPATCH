@@ -64,25 +64,39 @@ const t = checker(`\n▶ e2e: real extension + server + page${BACKGROUND ? " (ag
 
 function cleanup() { srv.close(); browser.kill(); http.close(); rmSync(tmp, { recursive: true, force: true }); }
 
+/** One CDP command over a fresh connection to a target. */
+async function cdp(url, method, params) {
+  const ws = new WebSocket(url);
+  await new Promise((r) => ws.on("open", r));
+  const reply = await new Promise((res) => {
+    ws.on("message", (raw) => { const m = JSON.parse(raw); if (m.id === 1) res(m); });
+    ws.send(JSON.stringify({ id: 1, method, params }));
+  });
+  ws.close();
+  return reply;
+}
+
+/**
+ * Our service worker. Matching the URL isn't enough: newer Chromium ships its
+ * own component extensions, some with a background.js too — ask the manifest.
+ */
+async function findDispatchWorker() {
+  const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
+  for (const w of list.filter((x) => x.type === "service_worker")) {
+    const r = await cdp(w.webSocketDebuggerUrl, "Runtime.evaluate", {
+      expression: "chrome.runtime.getManifest().short_name", returnByValue: true,
+    }).catch(() => null);
+    if (r?.result?.result?.value === "Dispatch") return w;
+  }
+  return null;
+}
+
 /**
  * Configure the extension the way a restart would see it: write settings into
  * chrome.storage from its own service worker, stop the worker, and wake it
- * with a tab event — it starts again and loads them. (Opening the popup page
- * through DevTools doesn't work on newer Chromium — the page gets no
- * chrome.runtime — and chrome.runtime.reload() doesn't bring back an
- * extension loaded with --load-extension.)
+ * with a tab event — it starts again and loads them, as after a browser restart.
  */
 async function configure(sw, settings) {
-  const cdp = async (url, method, params) => {
-    const ws = new WebSocket(url);
-    await new Promise((r) => ws.on("open", r));
-    const reply = await new Promise((res) => {
-      ws.on("message", (raw) => { const m = JSON.parse(raw); if (m.id === 1) res(m); });
-      ws.send(JSON.stringify({ id: 1, method, params }));
-    });
-    ws.close();
-    return reply;
-  };
   const set = await cdp(sw.webSocketDebuggerUrl, "Runtime.evaluate", {
     expression: `chrome.storage.local.set(${JSON.stringify(settings)}).then(() => "ok")`, awaitPromise: true, returnByValue: true,
   });
@@ -96,10 +110,7 @@ async function configure(sw, settings) {
 async function main() {
   let sw;
   for (let i = 0; i < 40 && !sw; i++) {
-    try {
-      const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
-      sw = list.find((x) => x.type === "service_worker" && x.url.endsWith("/background.js"));
-    } catch { /* browser still starting */ }
+    try { sw = await findDispatchWorker(); } catch { /* browser still starting */ }
     if (!sw) await wait(250);
   }
   t.check("extension loaded", !!sw);
