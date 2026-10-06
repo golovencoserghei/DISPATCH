@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html>
 <head>
   <meta charset="UTF-8" />
   <style>
@@ -35,45 +35,45 @@
   <h1><span id="dot" class="dot"></span> Dispatch</h1>
 
   <div class="row">
-    <span>Мастер-тумблер</span>
+    <span data-i18n="masterSwitch"></span>
     <label class="sw"><input type="checkbox" id="enabled" /><span class="slider"></span></label>
   </div>
-  <div class="row muted"><span id="conn">не подключено</span></div>
+  <div class="row muted"><span id="conn"></span></div>
   <div class="row">
-    <span>Режим доступа</span>
+    <span data-i18n="accessMode"></span>
     <select id="mode">
-      <option value="full">Полный</option>
-      <option value="readonly">Только чтение</option>
+      <option value="full" data-i18n="modeFull"></option>
+      <option value="readonly" data-i18n="modeReadonly"></option>
     </select>
   </div>
-  <div class="muted" style="font-size:11px">read-only блокирует навигацию, клики, ввод и eval. Всё, что видит вкладка с доступом, уходит агенту.</div>
+  <div class="muted" style="font-size:11px" data-i18n="modeHint"></div>
 
   <hr />
 
   <div class="row">
-    <span>Вкладки с доступом</span>
-    <button id="revokeAccess" title="Забрать доступ у всех">✕ все</button>
+    <span data-i18n="grantedTabs"></span>
+    <button id="revokeAccess" data-i18n="revokeAll" data-i18n-title="revokeAllTitle"></button>
   </div>
-  <div class="granted" id="granted"><span class="muted">— нет —</span></div>
-  <div class="muted" style="font-size:11px">◉ — текущая (команды без tabId идут на неё), клик по строке делает вкладку текущей. Агент читает любую из списка по tabId.</div>
-  <div class="row"><button id="grant">Дать доступ к этой вкладке</button></div>
+  <div class="granted" id="granted"></div>
+  <div class="muted" style="font-size:11px" data-i18n="grantedHint"></div>
+  <div class="row"><button id="grant" data-i18n="grantBtn"></button></div>
 
   <hr />
 
-  <div class="row"><span>Порт сервера</span><input type="number" id="port" min="1" max="65535" /></div>
-  <div class="row"><span>Токен</span><input type="password" id="token" placeholder="если сервер требует" style="width:150px" /></div>
-  <div class="muted">Allowlist хостов (по строке; пусто = любой):</div>
+  <div class="row"><span data-i18n="serverPort"></span><input type="number" id="port" min="1" max="65535" /></div>
+  <div class="row"><span data-i18n="token"></span><input type="password" id="token" data-i18n-placeholder="tokenPlaceholder" style="width:150px" /></div>
+  <div class="muted" data-i18n="allowlistLabel"></div>
   <textarea id="allowlist" placeholder="example.com&#10;*.mydomain.dev"></textarea>
-  <div class="row"><button id="reconnect">Переподключить</button></div>
+  <div class="row"><button id="reconnect" data-i18n="reconnect"></button></div>
 
   <hr />
   <div class="row">
-    <span id="dbg" class="muted">Перехват: выкл</span>
-    <button id="stopdbg" style="display:none">Стоп отладки</button>
+    <span id="dbg" class="muted"></span>
+    <button id="stopdbg" style="display:none" data-i18n="stopDebug"></button>
   </div>
 
   <hr />
-  <div class="muted">Лог</div>
+  <div class="muted" data-i18n="log"></div>
   <div class="log" id="log"></div>
 
   <script src="popup.js"></script>

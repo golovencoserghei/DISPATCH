@@ -1,0 +1,107 @@
+{
+  "extName": {
+    "message": "Dispatch — browser control for AI agents"
+  },
+  "extDescription": {
+    "message": "Let your AI agent (Claude, any MCP client) use your real browser — with a kill switch, host allowlist and read-only mode."
+  },
+  "masterSwitch": {
+    "message": "Master switch"
+  },
+  "connOff": {
+    "message": "off"
+  },
+  "connOk": {
+    "message": "connected to 127.0.0.1:$PORT$",
+    "placeholders": {
+      "port": {
+        "content": "$1"
+      }
+    }
+  },
+  "connNoServer": {
+    "message": "no connection to the server (port $PORT$)",
+    "placeholders": {
+      "port": {
+        "content": "$1"
+      }
+    }
+  },
+  "accessMode": {
+    "message": "Access mode"
+  },
+  "modeFull": {
+    "message": "Full"
+  },
+  "modeReadonly": {
+    "message": "Read-only"
+  },
+  "modeHint": {
+    "message": "Read-only blocks navigation, clicks, typing and eval. Everything a granted tab shows is sent to the agent."
+  },
+  "grantedTabs": {
+    "message": "Tabs with access"
+  },
+  "revokeAll": {
+    "message": "✕ all"
+  },
+  "revokeAllTitle": {
+    "message": "Revoke access from all tabs"
+  },
+  "none": {
+    "message": "— none —"
+  },
+  "grantedHint": {
+    "message": "◉ — current tab (commands without tabId go there); click a row to make it current. The agent can read any listed tab by tabId."
+  },
+  "grantBtn": {
+    "message": "Grant access to this tab"
+  },
+  "serverPort": {
+    "message": "Server port"
+  },
+  "token": {
+    "message": "Token"
+  },
+  "tokenPlaceholder": {
+    "message": "if the server requires one"
+  },
+  "allowlistLabel": {
+    "message": "Host allowlist (one per line; empty = any host):"
+  },
+  "reconnect": {
+    "message": "Reconnect"
+  },
+  "debugOff": {
+    "message": "Interception: off"
+  },
+  "debugOn": {
+    "message": "Interception: on ($NET$ requests, $CONSOLE$ logs)",
+    "placeholders": {
+      "net": {
+        "content": "$1"
+      },
+      "console": {
+        "content": "$2"
+      }
+    }
+  },
+  "stopDebug": {
+    "message": "Stop debugging"
+  },
+  "log": {
+    "message": "Log"
+  },
+  "staleCore": {
+    "message": "extension core is outdated — reloading the extension…"
+  },
+  "untitled": {
+    "message": "untitled"
+  },
+  "revokeOneTitle": {
+    "message": "Revoke access from this tab"
+  },
+  "grantFailed": {
+    "message": "could not grant access"
+  }
+}

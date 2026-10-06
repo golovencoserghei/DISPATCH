@@ -1,6 +1,15 @@
-// Dispatch popup — панель контроля. Общается с background через chrome.runtime.
+// Dispatch popup — the control panel. Talks to background via chrome.runtime.
 
 const $ = (id) => document.getElementById(id);
+const t = (key, ...subs) => chrome.i18n.getMessage(key, subs.map(String)) || key;
+
+/** Fill static texts from _locales: data-i18n → textContent, data-i18n-<attr> → attribute. */
+function localize() {
+  document.documentElement.lang = chrome.i18n.getUILanguage();
+  for (const el of document.querySelectorAll("[data-i18n]")) el.textContent = t(el.dataset.i18n);
+  for (const el of document.querySelectorAll("[data-i18n-title]")) el.title = t(el.dataset.i18nTitle);
+  for (const el of document.querySelectorAll("[data-i18n-placeholder]")) el.placeholder = t(el.dataset.i18nPlaceholder);
+}
 
 function send(msg) {
   return new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
@@ -13,21 +22,21 @@ async function refresh() {
   $("enabled").checked = s.enabled;
   $("dot").classList.toggle("on", s.connected);
   $("conn").textContent = s.connected
-    ? `подключено к 127.0.0.1:${s.port}`
-    : (s.enabled ? `нет связи с сервером (порт ${s.port})` : "выключено");
+    ? t("connOk", s.port)
+    : (s.enabled ? t("connNoServer", s.port) : t("connOff"));
 
-  // Popup-страница читается с диска при каждом открытии, а service worker —
-  // только при перезагрузке расширения. Если файлы обновили, а расширение
-  // нет, popup новый, ядро старое: оно не знает поля grantedTabs.
+  // The popup page is read from disk on every open, the service worker only
+  // when the extension reloads. If the files were updated but the extension
+  // wasn't, the popup is new and the core is old: it lacks grantedTabs.
   if (s.grantedTabs === undefined) {
     $("granted").textContent = "";
     const warn = document.createElement("span");
     warn.className = "muted";
-    warn.textContent = "ядро расширения устарело — перезагружаю расширение…";
+    warn.textContent = t("staleCore");
     $("granted").appendChild(warn);
     delete $("granted").dataset.key;
-    // Страница расширения вправе перезагрузить его сама: настройки лежат в
-    // storage и переживут перезапуск, popup просто закроется.
+    // An extension page may reload its own extension: settings live in
+    // storage and survive the restart, the popup just closes.
     if (!refresh.reloading) {
       refresh.reloading = true;
       setTimeout(() => chrome.runtime.reload(), 300);
@@ -45,44 +54,44 @@ async function refresh() {
 
   const d = s.debug || {};
   $("dbg").textContent = d.active
-    ? `Перехват: активен (${d.net} запр., ${d.console} лог.)`
-    : "Перехват: выкл";
+    ? t("debugOn", d.net, d.console)
+    : t("debugOff");
   $("stopdbg").style.display = d.active ? "" : "none";
 
   $("log").textContent = (s.log || []).join("\n");
 }
 
-/** Список вкладок с доступом: строка = сделать текущей, ✕ = забрать доступ у одной. */
+/** Tabs with access: click a row = make it current, ✕ = revoke access from that one. */
 function renderGranted(tabs) {
   const box = $("granted");
-  const key = JSON.stringify(tabs.map((t) => [t.id, t.title, t.current]));
-  if (box.dataset.key === key) return; // не перерисовывать без изменений — иначе мигает при hover
+  const key = JSON.stringify(tabs.map((x) => [x.id, x.title, x.current]));
+  if (box.dataset.key === key) return; // skip re-render when unchanged, otherwise it flickers on hover
   box.dataset.key = key;
   box.textContent = "";
   if (!tabs.length) {
     const none = document.createElement("span");
-    none.className = "muted"; none.textContent = "— нет —";
+    none.className = "muted"; none.textContent = t("none");
     box.appendChild(none);
     return;
   }
-  for (const t of tabs) {
+  for (const tab of tabs) {
     const row = document.createElement("div");
-    row.className = "tab" + (t.current ? " current" : "");
-    row.title = t.url || "";
+    row.className = "tab" + (tab.current ? " current" : "");
+    row.title = tab.url || "";
     const mark = document.createElement("span");
-    mark.className = "mark"; mark.textContent = t.current ? "◉" : "○";
+    mark.className = "mark"; mark.textContent = tab.current ? "◉" : "○";
     const title = document.createElement("span");
-    title.className = "title"; title.textContent = `#${t.id} · ${t.title || t.url || "без названия"}`;
+    title.className = "title"; title.textContent = `#${tab.id} · ${tab.title || tab.url || t("untitled")}`;
     const x = document.createElement("button");
-    x.className = "x"; x.textContent = "✕"; x.title = "Забрать доступ у этой вкладки";
+    x.className = "x"; x.textContent = "✕"; x.title = t("revokeOneTitle");
     x.addEventListener("click", async (e) => {
       e.stopPropagation();
-      await send({ type: "revokeAccess", tabId: t.id });
+      await send({ type: "revokeAccess", tabId: tab.id });
       refresh();
     });
     row.addEventListener("click", async () => {
-      if (t.current) return;
-      await send({ type: "setCurrent", tabId: t.id });
+      if (tab.current) return;
+      await send({ type: "setCurrent", tabId: tab.id });
       refresh();
     });
     row.append(mark, title, x);
@@ -97,7 +106,7 @@ $("enabled").addEventListener("change", async (e) => {
 
 $("grant").addEventListener("click", async () => {
   const r = await send({ type: "grantActive" });
-  if (r && !r.ok) alert(r.error || "не удалось дать доступ");
+  if (r && !r.ok) alert(r.error || t("grantFailed"));
   refresh();
 });
 
@@ -112,7 +121,7 @@ $("port").addEventListener("change", async (e) => {
 });
 
 $("token").addEventListener("change", async (e) => {
-  if (e.target.value === "••••••") return; // не перезаписывать маску
+  if (e.target.value === "••••••") return; // don't overwrite with the mask
   await send({ type: "setToken", value: e.target.value });
   refresh();
 });
@@ -137,5 +146,6 @@ $("stopdbg").addEventListener("click", async () => {
   refresh();
 });
 
+localize();
 refresh();
 setInterval(refresh, 1500);

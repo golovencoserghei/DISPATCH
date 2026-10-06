@@ -1,4 +1,4 @@
-// Общие помощники тестов: запуск MCP-сервера по stdio, фейковое расширение, счётчик.
+// Shared test helpers: launch the MCP server over stdio, fake extension, check counter.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -7,7 +7,7 @@ import { WebSocket } from "ws";
 export const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const SRV_DIR = fileURLToPath(new URL("../mcp-server", import.meta.url));
-// tsx может лежать в mcp-server/node_modules (обычно) или в корне (при hoisting).
+// tsx may live in mcp-server/node_modules (usually) or at the root (when hoisted).
 const TSX = fileURLToPath(
   [
     new URL("../mcp-server/node_modules/.bin/tsx", import.meta.url),
@@ -15,7 +15,7 @@ const TSX = fileURLToPath(
   ].find((u) => existsSync(fileURLToPath(u))) ?? new URL("../mcp-server/node_modules/.bin/tsx", import.meta.url),
 );
 
-/** Поднять MCP-сервер как дочерний процесс и общаться с ним по stdio (JSON-RPC). */
+/** Spawn the MCP server as a child process and talk to it over stdio (JSON-RPC). */
 export function startServer({ port, env } = {}) {
   const srv = spawn(TSX, ["src/index.ts"], {
     cwd: SRV_DIR,
@@ -55,11 +55,11 @@ export function startServer({ port, env } = {}) {
 }
 
 /**
- * Фейковое «расширение»: подключается к WS-серверу и отвечает на команды.
- * silent=true — принимать команды и НЕ отвечать (для проверки поведения при разрыве).
+ * Fake "extension": connects to the WS server and answers commands.
+ * silent=true — accept commands and NOT answer (to test behavior on disconnect).
  */
 export function fakeExtension(port, { origin = "chrome-extension://dispatch-test", token = "", protocolVersion = 1, onCommand, silent = false } = {}) {
-  // origin: null | "" — вообще не слать заголовок Origin (так выглядит локальный процесс).
+  // origin: null | "" — send no Origin header at all (that's how a local process looks).
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, origin ? { origin } : {});
   const state = { opened: false, closed: false };
   ws.on("open", () => {
@@ -67,12 +67,12 @@ export function fakeExtension(port, { origin = "chrome-extension://dispatch-test
     ws.send(JSON.stringify({ kind: "event", event: "hello", data: { name: "Dispatch", protocolVersion, token, ua: "test" } }));
   });
   ws.on("close", () => { state.closed = true; });
-  ws.on("error", () => { /* ожидаемо при reject origin */ });
+  ws.on("error", () => { /* expected when the origin is rejected */ });
   ws.on("message", (raw) => {
     const m = JSON.parse(raw.toString());
     if (m.kind === "ping") { ws.send(JSON.stringify({ kind: "pong" })); return; }
     if (m.kind === "cmd") {
-      if (silent) return; // команда принята, ответа не будет
+      if (silent) return; // command accepted, no answer will come
       const result = onCommand ? onCommand(m.method, m.params) : { ok: true, echo: m.method };
       ws.send(JSON.stringify({ id: m.id, kind: "res", ok: true, result }));
     }
@@ -80,7 +80,7 @@ export function fakeExtension(port, { origin = "chrome-extension://dispatch-test
   return { ws, state, close: () => ws.close() };
 }
 
-/** Простой счётчик проверок. */
+/** Simple check counter. */
 export function checker(title) {
   let pass = 0, fail = 0;
   if (title) console.log(title);
@@ -90,7 +90,7 @@ export function checker(title) {
       else { fail++; console.log(`  ✗ ${name}`, extra ?? ""); }
     },
     done(label) {
-      console.log(`${fail === 0 ? "✅" : "❌"} ${label || "итог"}: ${pass} прошло, ${fail} упало`);
+      console.log(`${fail === 0 ? "✅" : "❌"} ${label || "total"}: ${pass} passed, ${fail} failed`);
       return fail === 0;
     },
   };

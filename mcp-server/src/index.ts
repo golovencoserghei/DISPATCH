@@ -1,44 +1,48 @@
+#!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { createRequire } from "node:module";
 import { Bridge } from "./bridge.js";
 
 const PORT = Number(process.env.DISPATCH_PORT || 8765);
 const bridge = new Bridge(PORT);
 
-const server = new McpServer({ name: "dispatch", version: "0.1.0" });
+// ../package.json resolves the same from src/ (tsx) and dist/ (published build).
+const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
+const server = new McpServer({ name: "dispatch", version });
 
-// ── помощники ───────────────────────────────────────────────────────────────
+// ── helpers ─────────────────────────────────────────────────────────────────
 function text(obj: unknown) {
   const t = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
   return { content: [{ type: "text" as const, text: t }] };
 }
 
-/** Обёртка: превращает ошибки моста/расширения в человекочитаемый isError-ответ. */
+/** Wrapper: turns bridge/extension errors into a human-readable isError response. */
 async function guard(fn: () => Promise<any>) {
   try {
     return await fn();
   } catch (e: any) {
     return {
-      content: [{ type: "text" as const, text: "Ошибка: " + (e?.message || String(e)) }],
+      content: [{ type: "text" as const, text: "Error: " + (e?.message || String(e)) }],
       isError: true,
     };
   }
 }
 
-// Вкладок с доступом может быть несколько (человек раздаёт их в popup). Команды
-// страницы принимают необязательный tabId: без него работают на «текущей»
-// вкладке, с ним — на любой из набора, не переключая текущую.
+// There can be several granted tabs (the user grants them in the popup). Page
+// commands take an optional tabId: without it they act on the "current" tab,
+// with it — on any tab in the granted set, without switching the current one.
 const TAB_ID = z.number().int().optional()
-  .describe("id вкладки с доступом (granted=true в browser_tabs); пусто = текущая");
+  .describe("id of a granted tab (granted=true in browser_tabs); omit = current tab");
 
-// ── инструменты ───────────────────────────────────────────────────────────────
+// ── tools ─────────────────────────────────────────────────────────────────────
 server.registerTool(
   "browser_status",
   {
     description:
-      "Статус связки: подключено ли расширение, инфо о браузере, порт. " +
-      "Вызывай первым, если сомневаешься, что расширение на связи.",
+      "Connection status: whether the extension is connected, browser info, port. " +
+      "Call this first if you are unsure the extension is reachable.",
     inputSchema: {},
   },
   async () =>
@@ -47,8 +51,8 @@ server.registerTool(
       browser: bridge.lastHello,
       port: PORT,
       hint: bridge.connected
-        ? "Готово. Список вкладок с доступом — в browser_tabs (granted=true); если он пуст — дай доступ к вкладке в popup."
-        : "Расширение не подключено. Проверь, что оно установлено и мастер-тумблер включён.",
+        ? "Ready. Granted tabs are listed in browser_tabs (granted=true); if there are none, grant access to a tab in the popup."
+        : "Extension not connected. Check that it is installed and the master toggle is on.",
     }),
 );
 
@@ -56,9 +60,9 @@ server.registerTool(
   "browser_tabs",
   {
     description:
-      "Список открытых вкладок браузера: id, title, url, active. granted=true — вкладка с доступом, " +
-      "её можно читать по tabId (snapshot/get_html/extract/eval/…) без переключения; current=true — текущая, " +
-      "на ней работают команды без tabId. Вкладок с доступом может быть несколько — сравнивай их содержимое.",
+      "List open browser tabs: id, title, url, active. granted=true — a granted tab; " +
+      "it can be read by tabId (snapshot/get_html/extract/eval/…) without switching; current=true — the current tab, " +
+      "which commands without tabId act on. There can be several granted tabs — compare their contents.",
     inputSchema: {},
   },
   async () => guard(async () => text(await bridge.send("tabs"))),
@@ -68,10 +72,10 @@ server.registerTool(
   "browser_select_tab",
   {
     description:
-      "Сделать вкладку текущей (и дать ей доступ, если ещё нет) по id из browser_tabs. " +
-      "Остальные вкладки с доступом его сохраняют. Для разового чтения другой вкладки с доступом " +
-      "переключаться не нужно — передай tabId в саму команду.",
-    inputSchema: { tabId: z.number().int().describe("id вкладки из browser_tabs") },
+      "Make a tab current (and grant it access if not yet granted) by id from browser_tabs. " +
+      "Other granted tabs keep their access. To read another granted tab once, " +
+      "there is no need to switch — pass tabId to the command itself.",
+    inputSchema: { tabId: z.number().int().describe("tab id from browser_tabs") },
   },
   async ({ tabId }) => guard(async () => text(await bridge.send("select_tab", { tabId }))),
 );
@@ -79,8 +83,8 @@ server.registerTool(
 server.registerTool(
   "browser_navigate",
   {
-    description: "Перейти по URL в вкладке с доступом (текущей или указанной tabId) и дождаться загрузки.",
-    inputSchema: { url: z.string().describe("Полный URL, включая https://"), tabId: TAB_ID },
+    description: "Navigate a granted tab (the current one or the one given by tabId) to a URL and wait for it to load.",
+    inputSchema: { url: z.string().describe("Full URL, including https://"), tabId: TAB_ID },
   },
   async ({ url, tabId }) => guard(async () => text(await bridge.send("navigate", { url, tabId }, 60000))),
 );
@@ -89,12 +93,12 @@ server.registerTool(
   "browser_open_tab",
   {
     description:
-      "Открыть новую вкладку с URL и (по умолчанию) дать ей доступ и сделать текущей; прежние вкладки " +
-      "с доступом его сохраняют. grant=false — открыть, но не давать доступ; active=false — открыть в фоне.",
+      "Open a new tab with a URL and (by default) grant it access and make it current; previously granted " +
+      "tabs keep their access. grant=false — open without granting access; active=false — open in the background.",
     inputSchema: {
-      url: z.string().optional().describe("URL новой вкладки (пусто = пустая вкладка)"),
-      active: z.boolean().optional().describe("Сделать активной (по умолчанию да)"),
-      grant: z.boolean().optional().describe("Дать доступ новой вкладке (по умолчанию да)"),
+      url: z.string().optional().describe("URL for the new tab (omit = blank tab)"),
+      active: z.boolean().optional().describe("Make it active (default: true)"),
+      grant: z.boolean().optional().describe("Grant access to the new tab (default: true)"),
     },
   },
   async ({ url, active, grant }) =>
@@ -105,8 +109,8 @@ server.registerTool(
   "browser_close_tab",
   {
     description:
-      "Закрыть вкладку с доступом (текущую или указанную tabId). Чужую вкладку закрыть нельзя: " +
-      "tabId должен быть одной из вкладок с доступом — иначе сначала дай ей доступ через browser_select_tab.",
+      "Close a granted tab (the current one or the one given by tabId). Non-granted tabs cannot be closed: " +
+      "tabId must be one of the granted tabs — otherwise grant it access first via browser_select_tab.",
     inputSchema: { tabId: TAB_ID },
   },
   async ({ tabId }) => guard(async () => text(await bridge.send("close_tab", { tabId }))),
@@ -116,9 +120,9 @@ server.registerTool(
   "browser_snapshot",
   {
     description:
-      "Снимок интерактивных элементов страницы: список с ref, ролью, именем. " +
-      "Используй ref в browser_click / browser_type. Компактнее, чем полный HTML. " +
-      "Вложенные фреймы на хостах вне allowlist в снимок не попадают — их число в skippedFrames.",
+      "Snapshot of the page's interactive elements: a list with ref, role, name. " +
+      "Use ref in browser_click / browser_type. More compact than full HTML. " +
+      "Nested frames on hosts outside the allowlist are excluded from the snapshot — their count is in skippedFrames.",
     inputSchema: { tabId: TAB_ID },
   },
   async ({ tabId }) => guard(async () => text(await bridge.send("snapshot", { tabId }))),
@@ -127,9 +131,9 @@ server.registerTool(
 server.registerTool(
   "browser_get_html",
   {
-    description: "Вернуть outerHTML всей страницы или узла по CSS-селектору (обрезается до 200К).",
+    description: "Return the outerHTML of the whole page or of a node matched by a CSS selector (truncated to 200K).",
     inputSchema: {
-      selector: z.string().optional().describe("CSS-селектор; пусто = вся страница"),
+      selector: z.string().optional().describe("CSS selector; omit = whole page"),
       tabId: TAB_ID,
     },
   },
@@ -140,9 +144,9 @@ server.registerTool(
   "browser_eval",
   {
     description:
-      "Выполнить JS в контексте страницы (main world, доступ к window/DOM) и вернуть JSON-результат. " +
-      "Top-level await НЕ поддерживается — используй .then(). Возвращаемое значение должно быть сериализуемым.",
-    inputSchema: { expression: z.string().describe("JS-выражение, например: document.title"), tabId: TAB_ID },
+      "Run JS in the page context (main world, with access to window/DOM) and return the result as JSON. " +
+      "Top-level await is NOT supported — use .then(). The return value must be serializable.",
+    inputSchema: { expression: z.string().describe("JS expression, e.g. document.title"), tabId: TAB_ID },
   },
   async ({ expression, tabId }) =>
     guard(async () => {
@@ -154,10 +158,10 @@ server.registerTool(
 server.registerTool(
   "browser_click",
   {
-    description: "Клик по элементу: либо ref из browser_snapshot, либо CSS-селектор.",
+    description: "Click an element: either a ref from browser_snapshot or a CSS selector.",
     inputSchema: {
-      ref: z.string().optional().describe("ref из snapshot, например e12"),
-      selector: z.string().optional().describe("CSS-селектор (если нет ref)"),
+      ref: z.string().optional().describe("ref from snapshot, e.g. e12"),
+      selector: z.string().optional().describe("CSS selector (if no ref)"),
       tabId: TAB_ID,
     },
   },
@@ -168,12 +172,12 @@ server.registerTool(
 server.registerTool(
   "browser_type",
   {
-    description: "Ввести текст в поле (input/textarea/contenteditable) по ref или CSS-селектору.",
+    description: "Type text into a field (input/textarea/contenteditable) by ref or CSS selector.",
     inputSchema: {
-      ref: z.string().optional().describe("ref из snapshot"),
-      selector: z.string().optional().describe("CSS-селектор (если нет ref)"),
-      text: z.string().describe("Текст для ввода"),
-      submit: z.boolean().optional().describe("Отправить форму / нажать Enter после ввода"),
+      ref: z.string().optional().describe("ref from snapshot"),
+      selector: z.string().optional().describe("CSS selector (if no ref)"),
+      text: z.string().describe("Text to type"),
+      submit: z.boolean().optional().describe("Submit the form / press Enter after typing"),
       tabId: TAB_ID,
     },
   },
@@ -184,10 +188,10 @@ server.registerTool(
 server.registerTool(
   "browser_wait_for",
   {
-    description: "Дождаться появления элемента по CSS-селектору (или просто подождать).",
+    description: "Wait for an element matching a CSS selector to appear (or just wait).",
     inputSchema: {
-      selector: z.string().optional().describe("CSS-селектор для ожидания"),
-      timeoutMs: z.number().int().optional().describe("Таймаут, мс (по умолчанию 10000)"),
+      selector: z.string().optional().describe("CSS selector to wait for"),
+      timeoutMs: z.number().int().optional().describe("Timeout, ms (default 10000)"),
       tabId: TAB_ID,
     },
   },
@@ -199,9 +203,9 @@ server.registerTool(
   "browser_screenshot",
   {
     description:
-      "Скриншот вкладки с доступом (текущей или указанной tabId). fullPage=true снимает всю страницу через CDP " +
-      "(на время появляется полоса отладки Chrome), иначе — только видимую область.",
-    inputSchema: { fullPage: z.boolean().optional().describe("Снять всю страницу целиком"), tabId: TAB_ID },
+      "Screenshot of a granted tab (the current one or the one given by tabId). fullPage=true captures the whole page via CDP " +
+      "(the Chrome debugging bar appears temporarily); otherwise only the visible area.",
+    inputSchema: { fullPage: z.boolean().optional().describe("Capture the entire page"), tabId: TAB_ID },
   },
   async ({ fullPage, tabId }) =>
     guard(async () => {
@@ -214,13 +218,13 @@ server.registerTool(
   "browser_scroll",
   {
     description:
-      "Прокрутка страницы или контейнера. toBottom=true — до самого низа (для бесконечных лент); " +
-      "иначе на dx/dy пикселей. Без selector скроллит саму страницу.",
+      "Scroll the page or a container. toBottom=true — all the way to the bottom (for infinite feeds); " +
+      "otherwise by dx/dy pixels. Without selector, scrolls the page itself.",
     inputSchema: {
-      selector: z.string().optional().describe("CSS-селектор контейнера прокрутки"),
-      dx: z.number().optional().describe("Прокрутка по горизонтали, px"),
-      dy: z.number().optional().describe("Прокрутка по вертикали, px"),
-      toBottom: z.boolean().optional().describe("Прокрутить до конца"),
+      selector: z.string().optional().describe("CSS selector of the scroll container"),
+      dx: z.number().optional().describe("Horizontal scroll, px"),
+      dy: z.number().optional().describe("Vertical scroll, px"),
+      toBottom: z.boolean().optional().describe("Scroll to the end"),
       tabId: TAB_ID,
     },
   },
@@ -232,12 +236,12 @@ server.registerTool(
   "browser_press_key",
   {
     description:
-      "Нажать клавишу через CDP (надёжнее синтетических DOM-событий). Спец-клавиши: " +
+      "Press a key via CDP (more reliable than synthetic DOM events). Special keys: " +
       "Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, Space. " +
-      "Одиночный печатный символ тоже можно. Клавиша идёт в текущий фокус (или в selector, если задан).",
+      "A single printable character also works. The key goes to the currently focused element (or to selector, if given).",
     inputSchema: {
-      key: z.string().describe("Клавиша, например Enter или a"),
-      selector: z.string().optional().describe("CSS-селектор — сфокусировать перед нажатием"),
+      key: z.string().describe("Key, e.g. Enter or a"),
+      selector: z.string().optional().describe("CSS selector — focus it before pressing"),
     },
   },
   async ({ key, selector }) =>
@@ -248,15 +252,15 @@ server.registerTool(
   "browser_extract",
   {
     description:
-      "Структурный сбор данных по CSS-селекторам. fields — карта {имя: {selector, attr}}, " +
-      "attr по умолчанию 'text' (также 'html', 'href', 'src' или любой атрибут). " +
-      "multiple=true + container — вернуть массив объектов по каждому элементу container (карточки, строки таблицы).",
+      "Structured data extraction by CSS selectors. fields is a map {name: {selector, attr}}, " +
+      "attr defaults to 'text' (also 'html', 'href', 'src' or any attribute). " +
+      "multiple=true + container — return an array of objects, one per container element (cards, table rows).",
     inputSchema: {
-      container: z.string().optional().describe("Селектор повторяющегося блока (при multiple) или области"),
+      container: z.string().optional().describe("Selector of the repeating block (with multiple) or of the scope area"),
       fields: z
         .record(z.object({ selector: z.string().optional(), attr: z.string().optional() }))
         .describe("{ title: {selector:'h2'}, link: {selector:'a', attr:'href'} }"),
-      multiple: z.boolean().optional().describe("Собрать массив по каждому container"),
+      multiple: z.boolean().optional().describe("Collect an array, one entry per container"),
       tabId: TAB_ID,
     },
   },
@@ -264,14 +268,14 @@ server.registerTool(
     guard(async () => text(await bridge.send("extract", { container, fields, multiple, tabId }))),
 );
 
-// ── отладка: перехват сети и консоли (постоянная CDP-сессия) ─────────────────────
+// ── debugging: network and console capture (persistent CDP session) ──────────────
 server.registerTool(
   "browser_debug_start",
   {
     description:
-      "Включить перехват console и network на вкладке с доступом (открывает CDP-сессию; " +
-      "появляется баннер отладки Chrome). После этого работают browser_console_logs и browser_network. " +
-      "Выключается через browser_debug_stop.",
+      "Start capturing console and network on the granted tab (opens a CDP session; " +
+      "the Chrome debugging banner appears). After this, browser_console_logs and browser_network work. " +
+      "Turn it off with browser_debug_stop.",
     inputSchema: {},
   },
   async () => guard(async () => text(await bridge.send("debug_start"))),
@@ -280,7 +284,7 @@ server.registerTool(
 server.registerTool(
   "browser_debug_stop",
   {
-    description: "Остановить перехват, закрыть CDP-сессию (убрать баннер отладки), очистить буферы.",
+    description: "Stop capturing, close the CDP session (removing the debugging banner), and clear the buffers.",
     inputSchema: {},
   },
   async () => guard(async () => text(await bridge.send("debug_stop"))),
@@ -290,11 +294,11 @@ server.registerTool(
   "browser_console_logs",
   {
     description:
-      "Прочитать накопленные логи консоли, необработанные исключения и браузерные предупреждения. " +
-      "Требует browser_debug_start. level фильтрует по уровню (log/info/warn/error).",
+      "Read accumulated console logs, unhandled exceptions and browser warnings. " +
+      "Requires browser_debug_start. level filters by level (log/info/warn/error).",
     inputSchema: {
-      level: z.string().optional().describe("Фильтр по уровню: log|info|warn|error|debug"),
-      clear: z.boolean().optional().describe("Очистить буфер после чтения"),
+      level: z.string().optional().describe("Level filter: log|info|warn|error|debug"),
+      clear: z.boolean().optional().describe("Clear the buffer after reading"),
     },
   },
   async ({ level, clear }) =>
@@ -305,11 +309,11 @@ server.registerTool(
   "browser_network",
   {
     description:
-      "Список перехваченных сетевых запросов (метаданные: метод, статус, тип, размер, URL). " +
-      "Требует browser_debug_start. filter — подстрока URL. Тело ответа бери через browser_network_body.",
+      "List captured network requests (metadata: method, status, type, size, URL). " +
+      "Requires browser_debug_start. filter is a URL substring. Get the response body via browser_network_body.",
     inputSchema: {
-      filter: z.string().optional().describe("Оставить только запросы, чей URL содержит подстроку"),
-      clear: z.boolean().optional().describe("Очистить буфер после чтения"),
+      filter: z.string().optional().describe("Keep only requests whose URL contains this substring"),
+      clear: z.boolean().optional().describe("Clear the buffer after reading"),
     },
   },
   async ({ filter, clear }) =>
@@ -320,9 +324,9 @@ server.registerTool(
   "browser_network_body",
   {
     description:
-      "Тело ответа конкретного запроса по requestId (из browser_network). " +
-      "Работает, пока активна debug-сессия и ресурс не выгружен из памяти. Обрезается до 200К.",
-    inputSchema: { requestId: z.string().describe("requestId из browser_network") },
+      "Response body of a specific request by requestId (from browser_network). " +
+      "Works while the debug session is active and the resource has not been evicted from memory. Truncated to 200K.",
+    inputSchema: { requestId: z.string().describe("requestId from browser_network") },
   },
   async ({ requestId }) =>
     guard(async () => text(await bridge.send("network_body", { requestId }))),
@@ -332,12 +336,12 @@ server.registerTool(
   "browser_emulate",
   {
     description:
-      "Эмуляция устройства/окружения через CDP (открывает debug-сессию — виден баннер). " +
-      "Считается изменяющей командой: в режиме «только чтение» заблокирована. " +
-      "device: 'iPhone 14' | 'Pixel 7' | 'iPad'. Либо задай viewport / userAgent / geolocation вручную. " +
-      "reset=true снимает все override'ы и закрывает сессию.",
+      "Device/environment emulation via CDP (opens a debug session — the banner is visible). " +
+      "Counts as a modifying command: blocked in read-only mode. " +
+      "device: 'iPhone 14' | 'Pixel 7' | 'iPad'. Or set viewport / userAgent / geolocation manually. " +
+      "reset=true removes all overrides and closes the session.",
     inputSchema: {
-      device: z.string().optional().describe("Пресет устройства: iPhone 14 | Pixel 7 | iPad"),
+      device: z.string().optional().describe("Device preset: iPhone 14 | Pixel 7 | iPad"),
       viewport: z
         .object({
           width: z.number(),
@@ -346,20 +350,20 @@ server.registerTool(
           mobile: z.boolean().optional(),
         })
         .optional()
-        .describe("Ручной размер вьюпорта"),
-      userAgent: z.string().optional().describe("Подменить User-Agent"),
+        .describe("Manual viewport size"),
+      userAgent: z.string().optional().describe("Override the User-Agent"),
       geolocation: z
         .object({ latitude: z.number(), longitude: z.number(), accuracy: z.number().optional() })
         .optional()
-        .describe("Подменить геолокацию"),
-      reset: z.boolean().optional().describe("Снять всю эмуляцию и закрыть debug-сессию"),
+        .describe("Override the geolocation"),
+      reset: z.boolean().optional().describe("Remove all emulation and close the debug session"),
     },
   },
   async ({ device, viewport, userAgent, geolocation, reset }) =>
     guard(async () => text(await bridge.send("emulate", { device, viewport, userAgent, geolocation, reset }))),
 );
 
-// ── запуск ────────────────────────────────────────────────────────────────────
+// ── startup ───────────────────────────────────────────────────────────────────
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`[dispatch] MCP-сервер готов (WS ws://127.0.0.1:${PORT})`);
+console.error(`[dispatch] MCP server ready (WS ws://127.0.0.1:${PORT})`);

@@ -1,7 +1,7 @@
-// Функции, исполняемые ВНУТРИ страницы через chrome.scripting.executeScript({func}).
-// КАЖДАЯ должна быть САМОДОСТАТОЧНОЙ: executeScript сериализует только саму функцию
-// (func.toString()), поэтому ссылки на другие функции модуля в странице НЕ существуют.
-// Никаких общих хелперов между ними — резолвинг ref/selector встроен в click/type.
+// Functions executed INSIDE the page via chrome.scripting.executeScript({func}).
+// EACH must be SELF-CONTAINED: executeScript serializes only the function itself
+// (func.toString()), so references to other module functions do NOT exist in the page.
+// No shared helpers between them — ref/selector resolution is inlined into click/type.
 
 export function pageSnapshot() {
   const store = (window.__DISPATCH__ = window.__DISPATCH__ || {});
@@ -41,7 +41,7 @@ export function pageSnapshot() {
 
 export function pageGetHtml(selector) {
   const el = selector ? document.querySelector(selector) : document.documentElement;
-  if (!el) return { ok: false, error: "селектор не найден: " + selector };
+  if (!el) return { ok: false, error: "selector not found: " + selector };
   const html = el.outerHTML || "";
   const LIMIT = 200000;
   return { ok: true, html: html.slice(0, LIMIT), truncated: html.length > LIMIT, length: html.length };
@@ -70,7 +70,7 @@ export function pageFocus(selector) {
 export function pageClick(ref, selector) {
   const store = window.__DISPATCH__ || {};
   const el = ref ? (store.refs || {})[ref] : (selector ? document.querySelector(selector) : null);
-  if (!el) return { ok: false, error: ref ? `ref ${ref} не найден — сделай browser_snapshot заново` : "элемент не найден по селектору" };
+  if (!el) return { ok: false, error: ref ? `ref ${ref} not found — take a fresh browser_snapshot` : "no element matches the selector" };
   el.scrollIntoView({ block: "center", inline: "center" });
   el.click();
   return { ok: true, clicked: (el.innerText || el.value || el.tagName).toString().slice(0, 80) };
@@ -79,21 +79,21 @@ export function pageClick(ref, selector) {
 export function pageType(ref, selector, text, submit) {
   const store = window.__DISPATCH__ || {};
   const el = ref ? (store.refs || {})[ref] : (selector ? document.querySelector(selector) : null);
-  if (!el) return { ok: false, error: "элемент не найден" };
+  if (!el) return { ok: false, error: "element not found" };
   el.focus();
   const isInput = el instanceof HTMLInputElement;
   const isArea = el instanceof HTMLTextAreaElement;
   if (isInput || isArea) {
     const proto = isArea ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
-    setter.call(el, text); // нативный сеттер — совместимо с React
+    setter.call(el, text); // native setter — React-compatible
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   } else if (el.isContentEditable) {
     el.textContent = text;
     el.dispatchEvent(new InputEvent("input", { bubbles: true }));
   } else {
-    return { ok: false, error: "элемент не является полем ввода" };
+    return { ok: false, error: "element is not an input field" };
   }
   if (submit) {
     const form = el.form;
@@ -110,7 +110,7 @@ export async function pageWaitFor(selector, timeoutMs) {
       return { ok: true, found: true, elapsedMs: Date.now() - start };
     }
     if (Date.now() - start >= timeoutMs) {
-      return { ok: false, error: `элемент «${selector}» не появился за ${timeoutMs}мс`, found: false };
+      return { ok: false, error: `element "${selector}" did not appear within ${timeoutMs}ms`, found: false };
     }
     await new Promise((r) => setTimeout(r, 150));
   }
@@ -138,7 +138,7 @@ export function pageExtract(container, fields, multiple) {
       return { ok: true, count: items.length, items };
     }
     const root = container ? document.querySelector(container) : document.body;
-    if (!root) return { ok: false, error: "container не найден: " + container };
+    if (!root) return { ok: false, error: "container not found: " + container };
     return { ok: true, item: mapFields(root) };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -146,17 +146,17 @@ export function pageExtract(container, fields, multiple) {
 }
 
 /**
- * Шильдик «эта вкладка под контролем агента»: маленькая плашка в правом нижнем
- * углу. mode = "full" | "readonly", либо null — снять шильдик.
- * Живёт в Shadow DOM (стили страницы его не трогают, и он не мусорит в
- * get_html), не ловит мышь (pointer-events:none) и не попадает в snapshot —
- * поэтому агенту не мешает.
+ * "This tab is controlled by an agent" badge: a small pill in the bottom-right
+ * corner. mode = "full" | "readonly", or null to remove the badge.
+ * Lives in Shadow DOM (page styles don't touch it and it doesn't clutter
+ * get_html), ignores the mouse (pointer-events:none) and stays out of the
+ * snapshot — so it never gets in the agent's way.
  */
 export function pageShield(mode) {
   const ID = "__dispatch_shield__";
   const old = document.getElementById(ID);
   if (!mode) { old?.remove(); return { ok: true, shield: false }; }
-  if (!document.body) return { ok: true, shield: false, note: "нет body" };
+  if (!document.body) return { ok: true, shield: false, note: "no body" };
 
   const host = old || document.createElement("div");
   if (!old) {
@@ -180,14 +180,14 @@ export function pageShield(mode) {
       }
       .d { width: 7px; height: 7px; border-radius: 50%; background: ${full ? "#7ee08a" : "#aab4c4"}; }
     </style>
-    <div class="s"><span class="d"></span>Dispatch · ${full ? "полный доступ" : "только чтение"}</div>
+    <div class="s"><span class="d"></span>Dispatch · ${full ? "full access" : "read-only"}</div>
   `;
   return { ok: true, shield: true, mode: full ? "full" : "readonly" };
 }
 
 /**
- * Адрес документа фрейма. Нужен, чтобы проверить allowlist ПЕРЕД действием во
- * вложенном фрейме: у него может быть совсем другой хост, чем у самой вкладки.
+ * URL of the frame's document. Needed to check the allowlist BEFORE acting in a
+ * nested frame: it may have a completely different host than the tab itself.
  */
 export function pageHref() {
   return { ok: true, url: location.href };
@@ -195,7 +195,7 @@ export function pageHref() {
 
 export function pageScroll(selector, dx, dy, toBottom) {
   const el = selector ? document.querySelector(selector) : (document.scrollingElement || document.documentElement);
-  if (!el) return { ok: false, error: "элемент прокрутки не найден" };
+  if (!el) return { ok: false, error: "scroll element not found" };
   if (toBottom) el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
   else el.scrollBy({ left: dx || 0, top: dy || 0, behavior: "auto" });
   return { ok: true, scrollTop: Math.round(el.scrollTop), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight };

@@ -1,8 +1,8 @@
-// Мок браузерного API для тестов ядра (extension/dispatcher.js).
-// Повторяет те черты chrome.*, от которых ядро реально зависит, включая
-// callback-стиль с chrome.runtime.lastError у chrome.debugger.
+// Browser API mock for core tests (extension/dispatcher.js).
+// Reproduces the traits of chrome.* the core actually depends on, including
+// the callback style with chrome.runtime.lastError in chrome.debugger.
 
-/** WebSocket-заглушка: тест сам открывает соединение и читает отправленное. */
+/** WebSocket stub: the test opens the connection itself and reads what was sent. */
 export class MockWebSocket {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -14,7 +14,7 @@ export class MockWebSocket {
   constructor(url) {
     this.url = url;
     this.readyState = MockWebSocket.CONNECTING;
-    this.sent = [];       // всё, что ядро отправило серверу (уже распарсенное)
+    this.sent = [];       // everything the core sent to the server (already parsed)
     this.closed = false;
     MockWebSocket.last = this;
     MockWebSocket.created++;
@@ -26,32 +26,32 @@ export class MockWebSocket {
     this.closed = true;
     this.onclose?.();
   }
-  /** тест: «сервер принял соединение» */
+  /** test: "server accepted the connection" */
   open() { this.readyState = MockWebSocket.OPEN; this.onopen?.(); }
-  /** тест: «сервер прислал сообщение» */
+  /** test: "server sent a message" */
   recv(obj) { return this.onmessage?.({ data: JSON.stringify(obj) }); }
-  /** ответ ядра на команду с данным id */
+  /** the core's reply to the command with the given id */
   reply(id) { return this.sent.find((m) => m.id === id && m.kind === "res"); }
 }
 
 /**
  * @param {object} opts
- * @param {Array}  [opts.tabs]     стартовые вкладки
- * @param {object} [opts.storage]  стартовый chrome.storage.local
- * @param {object} [opts.scriptResult] что вернёт executeScript
+ * @param {Array}  [opts.tabs]     initial tabs
+ * @param {object} [opts.storage]  initial chrome.storage.local
+ * @param {object} [opts.scriptResult] what executeScript returns
  */
 export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true } } = {}) {
   const store = { ...storage };
   let tabList = tabs.map((t) => ({ active: false, windowId: 1, status: "complete", ...t }));
 
-  // журнал вызовов — тесты проверяют по нему факты («detach был вызван»)
+  // call log — tests check facts against it ("detach was called")
   const calls = { debugger: [], executeScript: [], removed: [], updated: [], created: [] };
 
-  // Состояние отладчика: как в Chrome, повторный attach к той же вкладке — ошибка.
+  // Debugger state: as in Chrome, a repeated attach to the same tab is an error.
   const attached = new Set();
   let lastError;
 
-  /** Вызвать callback в стиле chrome: сначала выставить lastError, потом снять. */
+  /** Invoke a chrome-style callback: set lastError first, then clear it. */
   const cb = (fn, err, ...args) => {
     lastError = err ? { message: err } : undefined;
     try { fn?.(...args); } finally { lastError = undefined; }
@@ -95,7 +95,7 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
         return out.map((t) => ({ ...t }));
       },
       async create({ url, active }) {
-        const t = { id: Math.max(0, ...tabList.map((x) => x.id)) + 1, url: url || "about:blank", title: "новая", active: active !== false, windowId: 1, status: "complete" };
+        const t = { id: Math.max(0, ...tabList.map((x) => x.id)) + 1, url: url || "about:blank", title: "new", active: active !== false, windowId: 1, status: "complete" };
         tabList.push(t);
         calls.created.push(t);
         return { ...t };
@@ -119,8 +119,8 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
       async executeScript(opts) {
         calls.executeScript.push(opts);
         const r = typeof scriptResult === "function" ? scriptResult(opts) : scriptResult;
-        // Заглушка может вернуть готовый массив кадров [{frameId, result}] —
-        // так тестируются многофреймовые сценарии (snapshot с allFrames).
+        // The stub may return a ready array of frames [{frameId, result}] —
+        // that's how multi-frame scenarios are tested (snapshot with allFrames).
         return Array.isArray(r) ? r : [{ frameId: 0, result: r }];
       },
     },
@@ -140,16 +140,16 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
       sendCommand({ tabId }, method, _params, done) {
         calls.debugger.push({ op: "send", tabId, method });
         if (!attached.has(tabId)) return cb(done, "Debugger is not attached to the tab with id: " + tabId);
-        // ответы на команды, чьи поля читает ядро
+        // replies to commands whose fields the core reads
         if (method === "Page.getLayoutMetrics") return cb(done, null, { cssContentSize: { width: 800, height: 2400 } });
         if (method === "Page.captureScreenshot") return cb(done, null, { data: "PNGDATA" });
-        if (method === "Network.getResponseBody") return cb(done, null, { body: "тело ответа", base64Encoded: false });
+        if (method === "Network.getResponseBody") return cb(done, null, { body: "response body", base64Encoded: false });
         cb(done, null, {});
       },
       onEvent: { addListener: () => {} },
       onDetach: { addListener: () => {} },
     },
-    // тестовые ручки
+    // test handles
     _calls: calls,
     _attached: attached,
     _tabs: () => tabList,
@@ -157,15 +157,15 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
   return chrome;
 }
 
-/** Отправить ядру команду «как от сервера» и вернуть его ответ. */
+/** Send the core a command "as if from the server" and return its reply. */
 let seq = 0;
 export async function cmd(d, ws, method, params = {}) {
   const id = "cmd" + ++seq;
   await ws.recv({ id, kind: "cmd", method, params });
-  return ws.reply(id) ?? { ok: false, error: "ядро не ответило" };
+  return ws.reply(id) ?? { ok: false, error: "core did not reply" };
 }
 
-/** Поднять ядро с моками: настройки применены, соединение открыто. */
+/** Start the core with mocks: settings applied, connection open. */
 export async function boot(createDispatcher, { storage = {}, tabs = [], scriptResult } = {}) {
   const chrome = mockChrome({ tabs, storage: { enabled: true, port: 8765, ...storage }, scriptResult });
   const d = createDispatcher({ chrome, WebSocketImpl: MockWebSocket, userAgent: "test-ua", now: () => 1700000000000 });

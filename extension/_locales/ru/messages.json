@@ -1,0 +1,107 @@
+{
+  "extName": {
+    "message": "Dispatch — управление браузером для AI-агентов"
+  },
+  "extDescription": {
+    "message": "Даёт AI-агенту (Claude, любой MCP-клиент) работать в вашем настоящем браузере — с мастер-тумблером, allowlist хостов и режимом только чтения."
+  },
+  "masterSwitch": {
+    "message": "Мастер-тумблер"
+  },
+  "connOff": {
+    "message": "выключено"
+  },
+  "connOk": {
+    "message": "подключено к 127.0.0.1:$PORT$",
+    "placeholders": {
+      "port": {
+        "content": "$1"
+      }
+    }
+  },
+  "connNoServer": {
+    "message": "нет связи с сервером (порт $PORT$)",
+    "placeholders": {
+      "port": {
+        "content": "$1"
+      }
+    }
+  },
+  "accessMode": {
+    "message": "Режим доступа"
+  },
+  "modeFull": {
+    "message": "Полный"
+  },
+  "modeReadonly": {
+    "message": "Только чтение"
+  },
+  "modeHint": {
+    "message": "read-only блокирует навигацию, клики, ввод и eval. Всё, что видит вкладка с доступом, уходит агенту."
+  },
+  "grantedTabs": {
+    "message": "Вкладки с доступом"
+  },
+  "revokeAll": {
+    "message": "✕ все"
+  },
+  "revokeAllTitle": {
+    "message": "Забрать доступ у всех"
+  },
+  "none": {
+    "message": "— нет —"
+  },
+  "grantedHint": {
+    "message": "◉ — текущая (команды без tabId идут на неё), клик по строке делает вкладку текущей. Агент читает любую из списка по tabId."
+  },
+  "grantBtn": {
+    "message": "Дать доступ к этой вкладке"
+  },
+  "serverPort": {
+    "message": "Порт сервера"
+  },
+  "token": {
+    "message": "Токен"
+  },
+  "tokenPlaceholder": {
+    "message": "если сервер требует"
+  },
+  "allowlistLabel": {
+    "message": "Allowlist хостов (по строке; пусто = любой):"
+  },
+  "reconnect": {
+    "message": "Переподключить"
+  },
+  "debugOff": {
+    "message": "Перехват: выкл"
+  },
+  "debugOn": {
+    "message": "Перехват: активен ($NET$ запр., $CONSOLE$ лог.)",
+    "placeholders": {
+      "net": {
+        "content": "$1"
+      },
+      "console": {
+        "content": "$2"
+      }
+    }
+  },
+  "stopDebug": {
+    "message": "Стоп отладки"
+  },
+  "log": {
+    "message": "Лог"
+  },
+  "staleCore": {
+    "message": "ядро расширения устарело — перезагружаю расширение…"
+  },
+  "untitled": {
+    "message": "без названия"
+  },
+  "revokeOneTitle": {
+    "message": "Забрать доступ у этой вкладки"
+  },
+  "grantFailed": {
+    "message": "не удалось дать доступ"
+  }
+}

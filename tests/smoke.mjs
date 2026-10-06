@@ -1,5 +1,5 @@
-// Дым-тест: MCP-хендшейк, список инструментов, request/response через WS-мост.
-// Не требует браузера — использует фейковое расширение.
+// Smoke test: MCP handshake, tool list, request/response over the WS bridge.
+// Needs no browser — uses a fake extension.
 import { startServer, fakeExtension, checker, wait } from "./lib.mjs";
 
 const EXPECTED = [
@@ -15,14 +15,14 @@ const PORT = 8781;
 
 async function main() {
   const s = startServer({ port: PORT });
-  const t = checker("\n▶ smoke: протокол и мост");
+  const t = checker("\n▶ smoke: protocol and bridge");
   await wait(1300);
   await s.initialize();
 
   const ext = fakeExtension(PORT, {
     onCommand: (method) => {
-      if (method === "tabs") return [{ id: 7, title: "Пример", url: "https://example.com", active: true, granted: false }];
-      if (method === "snapshot") return { ok: true, url: "https://example.com", title: "Пример", count: 1, elements: [{ ref: "e1", role: "link", tag: "a", name: "Ещё" }] };
+      if (method === "tabs") return [{ id: 7, title: "Example", url: "https://example.com", active: true, granted: false }];
+      if (method === "snapshot") return { ok: true, url: "https://example.com", title: "Example", count: 1, elements: [{ ref: "e1", role: "link", tag: "a", name: "More" }] };
       return { ok: true, echo: method };
     },
   });
@@ -30,18 +30,18 @@ async function main() {
 
   const names = await s.listTools();
   const missing = EXPECTED.filter((n) => !names.includes(n));
-  t.check(`зарегистрированы все ${EXPECTED.length} инструментов`, missing.length === 0, "нет: " + missing.join(", "));
+  t.check(`all ${EXPECTED.length} tools registered`, missing.length === 0, "missing: " + missing.join(", "));
 
   const st = JSON.parse((await s.callTool("browser_status")).text);
-  t.check("browser_status: расширение подключено", st.connected === true);
+  t.check("browser_status: extension connected", st.connected === true);
 
   const tabs = await s.callTool("browser_tabs");
-  t.check("browser_tabs проходит через мост", tabs.ok && tabs.text.includes("example.com"));
+  t.check("browser_tabs goes through the bridge", tabs.ok && tabs.text.includes("example.com"));
 
   const snap = await s.callTool("browser_snapshot");
-  t.check("browser_snapshot возвращает данные", snap.ok && JSON.parse(snap.text).count === 1);
+  t.check("browser_snapshot returns data", snap.ok && JSON.parse(snap.text).count === 1);
 
   ext.close(); s.close();
   process.exit(t.done("smoke") ? 0 : 1);
 }
-main().catch((e) => { console.error("smoke упал:", e); process.exit(1); });
+main().catch((e) => { console.error("smoke crashed:", e); process.exit(1); });

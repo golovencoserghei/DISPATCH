@@ -3,15 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Браузерное расширение + MCP-сервер для управления реальным браузером с живыми сессиями",
+  "description": "Chrome extension + MCP server that lets AI agents drive your real, logged-in browser — with guardrails",
   "scripts": {
     "postinstall": "npm --prefix mcp-server install",
     "typecheck": "npm --prefix mcp-server run typecheck",
+    "build": "npm --prefix mcp-server run build",
     "dev": "npm --prefix mcp-server run dev",
+    "pack:extension": "node scripts/pack-extension.mjs",
     "test": "node tests/run.mjs",
     "test:page": "node tests/page-functions.mjs"
   },
   "devDependencies": {
     "ws": "^8.18.0"
-  }
+  },
+  "license": "MIT"
 }

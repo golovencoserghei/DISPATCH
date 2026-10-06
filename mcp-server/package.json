@@ -1,13 +1,46 @@
 {
-  "name": "dispatch-mcp",
+  "name": "dispatch-browser-mcp",
   "version": "0.1.0",
-  "private": true,
+  "mcpName": "io.github.golovencoserghei/dispatch",
+  "description": "MCP server that lets AI agents drive your real, logged-in Chrome via the Dispatch extension — with a kill switch, host allowlist and read-only mode",
+  "license": "MIT",
   "type": "module",
-  "description": "MCP server bridging Claude to the Dispatch browser extension",
+  "bin": {
+    "dispatch-browser-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/golovencoserghei/DISPATCH.git",
+    "directory": "mcp-server"
+  },
+  "homepage": "https://github.com/golovencoserghei/DISPATCH#readme",
+  "bugs": "https://github.com/golovencoserghei/DISPATCH/issues",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "chrome",
+    "chrome-extension",
+    "browser-automation",
+    "claude",
+    "ai-agent",
+    "cdp",
+    "devtools"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

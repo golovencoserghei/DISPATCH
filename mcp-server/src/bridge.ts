@@ -1,38 +1,38 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 
-// Все логи — только в stderr: stdout занят MCP-протоколом (JSON-RPC).
+// All logs go to stderr only: stdout is reserved for the MCP protocol (JSON-RPC).
 const log = (...a: unknown[]) => console.error("[dispatch]", ...a);
 
-/** Версия протокола расширение↔сервер; при расхождении major — предупреждаем. */
+/** Extension↔server protocol version; we warn on a major mismatch. */
 export const PROTOCOL_VERSION = 1;
-/** Если задан DISPATCH_TOKEN — расширение обязано прислать совпадающий токен в hello. */
+/** If DISPATCH_TOKEN is set, the extension must send a matching token in hello. */
 const REQUIRED_TOKEN = process.env.DISPATCH_TOKEN || "";
-/** Пауза перед повторной попыткой занять порт, когда он уже занят. */
+/** Delay before retrying to bind the port when it is already in use. */
 const LISTEN_RETRY_MS = Number(process.env.DISPATCH_LISTEN_RETRY_MS || 3000);
 
 /**
- * Сравнение токена за постоянное время: сравниваем sha256-дайджесты, а не строки.
- * Дайджесты всегда по 32 байта, поэтому timingSafeEqual не бросает на разной длине
- * и сама длина токена по времени ответа не утекает.
+ * Constant-time token comparison: we compare sha256 digests, not the strings.
+ * Digests are always 32 bytes, so timingSafeEqual never throws on a length mismatch
+ * and the token length itself does not leak through response timing.
  */
 const digest = (v: unknown) => createHash("sha256").update(typeof v === "string" ? v : "").digest();
 const tokenMatches = (got: unknown) => timingSafeEqual(digest(REQUIRED_TOKEN), digest(got));
 
 /**
- * Кого пускаем на рукопожатии. Это ALLOWLIST, а не denylist: отсекать только
- * http(s)-origin было недостаточно — любая страница может создать
- * <iframe sandbox="allow-scripts">, у которого origin непрозрачный и браузер
- * шлёт «Origin: null», и такое соединение проходило проверку. ws:// на 127.0.0.1
- * считается potentially trustworthy, так что и mixed-content не мешал.
+ * Who is admitted at the handshake. This is an ALLOWLIST, not a denylist: rejecting
+ * only http(s) origins was not enough — any page can create an
+ * <iframe sandbox="allow-scripts">, whose origin is opaque, so the browser sends
+ * "Origin: null", and such a connection used to pass the check. ws:// on 127.0.0.1
+ * is considered potentially trustworthy, so mixed-content blocking did not stop it either.
  *
- * Пускаем: расширение (chrome-extension://…) и локальные процессы, вообще не
- * приславшие Origin. Браузер заголовок Origin ставит ВСЕГДА, поэтому веб-страница
- * (в том числе "null" и "file://") сюда не пролезет. От локальных процессов
- * защищает только DISPATCH_TOKEN.
+ * Admitted: the extension (chrome-extension://…) and local processes that send
+ * no Origin at all. Browsers ALWAYS set the Origin header, so a web page
+ * (including "null" and "file://") cannot get through. Against local processes
+ * the only protection is DISPATCH_TOKEN.
  */
 export function originAllowed(origin: string | undefined | null): boolean {
-  if (!origin) return true; // заголовка нет — не браузер
+  if (!origin) return true; // no header — not a browser
   return /^chrome-extension:\/\//i.test(origin);
 }
 
@@ -44,48 +44,48 @@ type Pending = {
 };
 
 /**
- * Мост между MCP-сервером и расширением.
- * Поднимает локальный WebSocket-сервер, к которому подключается фоновый
- * service worker расширения. Команды отправляются с уникальным id, ответы
- * сопоставляются по нему (request/response поверх WS).
+ * Bridge between the MCP server and the extension.
+ * Runs a local WebSocket server that the extension's background service worker
+ * connects to. Commands are sent with a unique id and responses are matched
+ * by it (request/response over WS).
  */
 export class Bridge {
   private wss!: WebSocketServer;
   private listenRetry: ReturnType<typeof setTimeout> | null = null;
   private client: WebSocket | null = null;
-  private clientReady = false; // прошёл ли клиент валидный hello (+ токен)
+  private clientReady = false; // whether the client has sent a valid hello (+ token)
   private pending = new Map<string, Pending>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
 
-  /** Последнее «hello» от расширения (инфо о браузере). */
+  /** The latest "hello" from the extension (browser info). */
   public lastHello: unknown = null;
 
   constructor(public readonly port: number) {
     this.listen();
     if (!REQUIRED_TOKEN) {
-      log("ВНИМАНИЕ: DISPATCH_TOKEN не задан — управлять браузером сможет любой " +
-          "локальный процесс, подключившийся к этому порту. Задай токен в env сервера " +
-          "и то же значение в popup расширения.");
+      log("WARNING: DISPATCH_TOKEN is not set — any local process that connects to this " +
+          "port can control the browser. Set the token in the server env " +
+          "and the same value in the extension popup.");
     }
   }
 
   /**
-   * Поднять WS-сервер. Порт один на машину, поэтому второй параллельно
-   * запущенный сервер (второе окно редактора, забытый процесс) получает
-   * EADDRINUSE. Раньше это роняло мост молча — сервер жил, но расширение
-   * подключиться к нему не могло, и browser_status врал про «расширение не
-   * подключено». Теперь ждём и пробуем снова: как только порт освободится,
-   * мост поднимется сам, без перезапуска сервера.
+   * Start the WS server. There is one port per machine, so a second server
+   * running in parallel (another editor window, a forgotten process) gets
+   * EADDRINUSE. This used to kill the bridge silently — the server stayed up,
+   * but the extension could not connect to it, and browser_status falsely
+   * reported "extension not connected". Now we wait and retry: as soon as the
+   * port is freed, the bridge comes up by itself, without restarting the server.
    */
   private listen() {
     this.wss = new WebSocketServer({
       host: "127.0.0.1",
       port: this.port,
-      // Кто вообще имеет право подключиться — см. originAllowed() выше.
+      // Who is allowed to connect at all — see originAllowed() above.
       verifyClient: (info, cb) => {
         const origin = info.origin || "";
         if (!originAllowed(origin)) {
-          log(`ОТКЛОНЕНО соединение с origin: ${origin}`);
+          log(`REJECTED connection from origin: ${origin}`);
           cb(false, 403, "forbidden origin");
           return;
         }
@@ -93,12 +93,12 @@ export class Bridge {
       },
     });
     this.wss.on("connection", (ws) => this.onConnection(ws));
-    this.wss.on("listening", () => log(`WebSocket слушает ws://127.0.0.1:${this.port}`));
+    this.wss.on("listening", () => log(`WebSocket listening on ws://127.0.0.1:${this.port}`));
     this.wss.on("error", (e: NodeJS.ErrnoException) => {
       if (e?.code === "EADDRINUSE") {
         if (this.listenRetry) return;
-        log(`порт ${this.port} занят другим сервером dispatch — жду освобождения, ` +
-            `повтор через ${LISTEN_RETRY_MS} мс`);
+        log(`port ${this.port} is in use by another dispatch server — waiting for it to free up, ` +
+            `retrying in ${LISTEN_RETRY_MS} ms`);
         this.listenRetry = setTimeout(() => {
           this.listenRetry = null;
           this.wss.removeAllListeners();
@@ -112,47 +112,47 @@ export class Bridge {
   }
 
   get connected(): boolean {
-    // Готов = сокет открыт И прошёл валидный hello: команды не уходят «полу-клиенту».
+    // Ready = socket is open AND a valid hello was received: commands never go to a "half-client".
     return !!this.client && this.client.readyState === WebSocket.OPEN && this.clientReady;
   }
 
   /**
-   * Отклонить все ждущие команды. Без этого при разрыве связи они висят до
-   * своего таймаута (30с), хотя ответить уже некому.
+   * Reject all pending commands. Otherwise, on disconnect they hang until
+   * their timeout (30s), even though nobody is left to answer.
    */
   private failPending(reason: string) {
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(new Error(`${reason} (команда «${p.method}» не выполнена)`));
+      p.reject(new Error(`${reason} (command "${p.method}" was not executed)`));
     }
     this.pending.clear();
   }
 
   private onConnection(ws: WebSocket) {
-    // Одно активное соединение: новое вытесняет старое. Проверяем сам факт
-    // наличия клиента, а не его readyState: полуоткрытый (CONNECTING/CLOSING)
-    // сокет тоже надо вытеснить вместе с его ждущими командами.
+    // One active connection: a new one replaces the old one. We check whether a
+    // client exists at all, not its readyState: a half-open (CONNECTING/CLOSING)
+    // socket must also be replaced together with its pending commands.
     if (this.client) {
-      log("новое соединение расширения вытесняет предыдущее");
+      log("new extension connection replaces the previous one");
       try { this.client.close(); } catch { /* noop */ }
-      this.failPending("Соединение вытеснено новым подключением расширения");
+      this.failPending("Connection replaced by a new extension connection");
     }
     this.client = ws;
     this.clientReady = false;
-    log("соединение установлено, жду hello…");
+    log("connection established, waiting for hello…");
 
     ws.on("message", (buf) => this.onMessage(String(buf), ws));
     ws.on("close", () => {
-      if (this.client !== ws) return; // уже вытеснен новым соединением — его команды не трогаем
+      if (this.client !== ws) return; // already replaced by a new connection — leave its commands alone
       this.client = null;
       this.clientReady = false;
-      this.failPending("Расширение отключилось");
+      this.failPending("Extension disconnected");
       if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
-      log("расширение отключилось");
+      log("extension disconnected");
     });
     ws.on("error", (e) => log("WS client error:", e));
 
-    // Пинг поддерживает service worker живым (активность сбрасывает idle-таймер MV3).
+    // The ping keeps the service worker alive (activity resets the MV3 idle timer).
     if (!this.heartbeat) {
       this.heartbeat = setInterval(() => {
         if (this.connected) {
@@ -172,48 +172,48 @@ export class Bridge {
       clearTimeout(p.timer);
       this.pending.delete(msg.id);
       if (msg.ok) p.resolve(msg.result);
-      else p.reject(new Error(msg.error || "ошибка расширения"));
+      else p.reject(new Error(msg.error || "extension error"));
       return;
     }
 
     if (msg.kind === "event") {
       if (msg.event === "hello") {
         const data = msg.data || {};
-        // Токен: если сервер запущен с DISPATCH_TOKEN — расширение обязано прислать его.
+        // Token: if the server runs with DISPATCH_TOKEN, the extension must send it.
         if (REQUIRED_TOKEN && !tokenMatches(data.token)) {
-          log("ОТКЛОНЕНО: неверный/отсутствующий токен в hello");
-          // Закрываем сокет и отдаём уборку обработчику close: он снимет клиента,
-          // отклонит ждущие команды и погасит heartbeat. Команды сюда всё равно не
-          // уходили — clientReady остался false, значит connected === false.
+          log("REJECTED: invalid/missing token in hello");
+          // Close the socket and leave cleanup to the close handler: it drops the client,
+          // rejects pending commands and stops the heartbeat. No commands were sent here
+          // anyway — clientReady stayed false, so connected === false.
           try { ws.close(4001, "bad token"); } catch { /* noop */ }
           return;
         }
         if (data.protocolVersion !== PROTOCOL_VERSION) {
-          log(`ВНИМАНИЕ: версия протокола расширения = ${data.protocolVersion}, сервера = ${PROTOCOL_VERSION}`);
+          log(`WARNING: extension protocol version = ${data.protocolVersion}, server = ${PROTOCOL_VERSION}`);
         }
         this.lastHello = data;
         if (this.client === ws) this.clientReady = true;
-        log("hello принят:", JSON.stringify({ ...data, token: data.token ? "***" : undefined }));
+        log("hello accepted:", JSON.stringify({ ...data, token: data.token ? "***" : undefined }));
       } else {
         log(`event ${msg.event}:`, JSON.stringify(msg.data ?? {}).slice(0, 300));
       }
     }
-    // kind === "pong" и прочее игнорируем.
+    // kind === "pong" and anything else is ignored.
   }
 
-  /** Отправить команду расширению и дождаться ответа. */
+  /** Send a command to the extension and wait for the response. */
   send<T = any>(method: string, params: unknown = {}, timeoutMs = 30000): Promise<T> {
     if (!this.connected) {
       return Promise.reject(new Error(
-        "Расширение Dispatch не подключено. Открой браузер с установленным расширением " +
-        "и убедись, что мастер-тумблер в popup включён.",
+        "The Dispatch extension is not connected. Open a browser with the extension installed " +
+        "and make sure the master toggle in the popup is on.",
       ));
     }
     const id = randomUUID();
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Таймаут команды «${method}» (${timeoutMs}мс)`));
+        reject(new Error(`Command "${method}" timed out (${timeoutMs}ms)`));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, method });
       this.client!.send(JSON.stringify({ id, kind: "cmd", method, params }));

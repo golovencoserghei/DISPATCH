@@ -1,0 +1,51 @@
+name: Release
+
+# Push a tag like v0.1.0 (matching extension/manifest.json and
+# mcp-server/package.json) to build the extension zip, attach it to a GitHub
+# release and — if the NPM_TOKEN secret is set — publish the MCP server to npm.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # A step's own env isn't visible to its `if`, so expose the check job-wide.
+      HAS_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install
+      - run: npm run typecheck
+      - uses: browser-actions/setup-chrome@v1
+        id: chrome
+      - name: Tests
+        env:
+          DISPATCH_CHROME: ${{ steps.chrome.outputs.chrome-path }}
+        run: npm test
+      - name: Tag matches the versions in the repo
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          test "$tag" = "$(node -p 'require("./extension/manifest.json").version')"
+          test "$tag" = "$(node -p 'require("./mcp-server/package.json").version')"
+      - name: Pack extension
+        run: npm run pack:extension
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/dispatch-extension-*.zip --generate-notes --title "$GITHUB_REF_NAME"
+      - name: Publish to npm
+        if: ${{ env.HAS_NPM_TOKEN == 'true' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        working-directory: mcp-server
+        run: npm publish --provenance --access public

@@ -1,12 +1,12 @@
-// Ядро Dispatch: связь с MCP-сервером, гейт доступа, диспетчер команд, CDP-менеджер.
+// Dispatch core: MCP-server transport, access gate, command dispatcher, CDP manager.
 //
-// Здесь НЕТ обращений к глобальному `chrome` и `WebSocket` — оба приходят фасадом
-// в createDispatcher(). Благодаря этому ядро гоняется в Node с моками
-// (tests/dispatcher.mjs), а не только в браузере: настоящее расширение под
-// автотест не поставить — Chrome 137+ игнорирует --load-extension, когда включён
-// удалённый отладчик (та же защита, от которой Dispatch и защищает пользователя).
+// There are NO references to the global `chrome` or `WebSocket` here — both arrive
+// as a facade via createDispatcher(). That lets the core run in Node with mocks
+// (tests/dispatcher.mjs), not only in a browser: the real extension cannot be put
+// under automated tests — Chrome 137+ ignores --load-extension when the remote
+// debugger is enabled (the very protection Dispatch itself shields the user with).
 //
-// background.js — тонкая обвязка: отдаёт сюда настоящий chrome и вешает листенеры.
+// background.js is a thin shell: it passes the real chrome in and registers listeners.
 
 import {
   pageSnapshot, pageGetHtml, pageEval, pageFocus, pageHref,
@@ -15,9 +15,9 @@ import {
 import { methodAllowed, hostAllowed, urlAllowed, hostOf, parseRef } from "./policy.js";
 
 export const DEFAULT_PORT = 8765;
-export const PROTOCOL_VERSION = 1; // должен совпадать с сервером (bridge.ts)
-const NET_MAX = 500;      // размер кольцевого буфера сетевых запросов
-const CONSOLE_MAX = 500;  // размер кольцевого буфера логов консоли
+export const PROTOCOL_VERSION = 1; // must match the server (bridge.ts)
+const NET_MAX = 500;      // network request ring buffer size
+const CONSOLE_MAX = 500;  // console log ring buffer size
 const LOG_MAX = 40;
 
 const DEVICES = {
@@ -53,44 +53,44 @@ function remoteToStr(o) {
   return o.type + (o.subtype ? `:${o.subtype}` : "");
 }
 
-// Инжект скриптов и захват возможны только на обычных страницах, не на служебных.
+// Script injection and capture work only on regular pages, not on internal ones.
 const isInjectable = (url) => /^https?:\/\//i.test(url || "") || /^file:\/\//i.test(url || "");
 
 /**
  * @param {object} deps
- * @param {object} deps.chrome            фасад расширенческого API
- * @param {Function} deps.WebSocketImpl   конструктор WebSocket
- * @param {string} [deps.userAgent]       UA браузера — уходит серверу в hello
- * @param {Function} [deps.now]           источник времени (для тестов)
+ * @param {object} deps.chrome            facade of the extension API
+ * @param {Function} deps.WebSocketImpl   WebSocket constructor
+ * @param {string} [deps.userAgent]       browser UA — sent to the server in hello
+ * @param {Function} [deps.now]           time source (for tests)
  */
 export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = () => Date.now() }) {
   const WS = WebSocketImpl;
 
-  // ── состояние связи/контроля ───────────────────────────────────────────────
+  // ── transport/control state ────────────────────────────────────────────────
   const state = {
     ws: null,
     connected: false,
-    enabled: false,        // мастер-тумблер
+    enabled: false,        // master switch
     port: DEFAULT_PORT,
-    token: "",             // опциональный секрет; нужен, если сервер запущен с DISPATCH_TOKEN
-    mode: "full",          // "full" | "readonly" — read-only блокирует изменяющие команды
-    // Вкладок с доступом может быть НЕСКОЛЬКО: человек раздаёт доступ страницам,
-    // которые агент должен сопоставить, а агент читает их по tabId, не переключаясь.
-    grantedTabs: [],       // id вкладок с доступом, в порядке выдачи
-    grantedTabId: null,    // «текущая» из них: на ней работают команды без tabId
-    allowlist: [],         // список хостов-паттернов; пусто = любой
-    log: [],               // кольцевой буфер последних действий
+    token: "",             // optional secret; required if the server runs with DISPATCH_TOKEN
+    mode: "full",          // "full" | "readonly" — read-only blocks mutating commands
+    // There can be SEVERAL granted tabs: the human grants access to pages the agent
+    // needs to cross-reference, and the agent reads them by tabId without switching.
+    grantedTabs: [],       // ids of granted tabs, in grant order
+    grantedTabId: null,    // the "current" one: commands without tabId run on it
+    allowlist: [],         // host patterns; empty = any
+    log: [],               // ring buffer of recent actions
   };
 
-  // ── состояние CDP-сессии (перехват/эмуляция) ───────────────────────────────
+  // ── CDP session state (capture/emulation) ──────────────────────────────────
   const dbg = {
-    tabId: null,           // к какой вкладке прикреплена постоянная сессия
+    tabId: null,           // tab the persistent session is attached to
     attached: false,
-    persistent: false,     // включена ли пользователем через debug_start/emulate
-    net: [],               // кольцевой буфер записей запросов
-    netById: new Map(),    // requestId -> запись
-    console: [],           // кольцевой буфер логов
-    emulation: [],         // применённые override'ы (для статуса)
+    persistent: false,     // enabled via debug_start/emulate
+    net: [],               // ring buffer of request records
+    netById: new Map(),    // requestId -> record
+    console: [],           // ring buffer of console logs
+    emulation: [],         // applied overrides (for status)
   };
 
   function pushLog(line) {
@@ -106,7 +106,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     state.token = s.token || "";
     state.mode = s.mode === "readonly" ? "readonly" : "full";
     state.allowlist = Array.isArray(s.allowlist) ? s.allowlist : [];
-    // Старый формат хранил одну grantedTabId — она же и единственная вкладка набора.
+    // The old format stored a single grantedTabId — it is also the only tab in the set.
     const ids = Array.isArray(s.grantedTabs) ? s.grantedTabs : (s.grantedTabId != null ? [s.grantedTabId] : []);
     state.grantedTabs = ids.filter((id) => Number.isInteger(id));
     state.grantedTabId = state.grantedTabs.includes(s.grantedTabId) ? s.grantedTabId : (state.grantedTabs.at(-1) ?? null);
@@ -126,7 +126,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
   const isGranted = (tabId) => state.grantedTabs.includes(tabId);
 
-  // ── бейдж на иконке: цвет = статус связи, «◉» на вкладках с доступом ────────
+  // ── icon badge: color = connection status, "◉" on granted tabs ─────────────
   let badgedTabs = new Set();
   const safe = (p) => { try { if (p && p.catch) p.catch(() => {}); } catch { /* noop */ } };
 
@@ -134,13 +134,13 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     const color = !state.enabled ? "#888888" : (state.connected ? "#2c8a3d" : "#bb3333");
     safe(chrome.action.setBadgeBackgroundColor({ color }));
     safe(chrome.action.setBadgeText({ text: !state.enabled ? "" : (state.connected ? "on" : "off") }));
-    // снять пометку с вкладок, потерявших доступ
+    // clear the mark from tabs that lost access
     for (const id of badgedTabs) {
       if (!isGranted(id)) safe(chrome.action.setBadgeText({ text: "", tabId: id }));
     }
     badgedTabs = new Set(state.grantedTabs);
     for (const id of state.grantedTabs) {
-      // «◉» — текущая, «○» — остальные вкладки с доступом
+      // "◉" = current, "○" = other granted tabs
       safe(chrome.action.setBadgeText({ text: id === state.grantedTabId ? "◉" : "○", tabId: id }));
       safe(chrome.action.setBadgeBackgroundColor({ color: "#2c8a3d", tabId: id }));
     }
@@ -163,34 +163,34 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     try {
       ws = new WS(url);
     } catch (e) {
-      pushLog(`WS ошибка создания: ${e}`);
+      pushLog(`WS creation error: ${e}`);
       return;
     }
     state.ws = ws;
 
     ws.onopen = () => {
       state.connected = true;
-      pushLog("подключено к MCP-серверу");
+      pushLog("connected to the MCP server");
       send({ kind: "event", event: "hello", data: { name: "Dispatch", protocolVersion: PROTOCOL_VERSION, token: state.token || "", ua: userAgent, ts: now() } });
       updateBadge();
     };
     ws.onclose = () => {
       state.connected = false;
-      pushLog("соединение с сервером закрыто");
+      pushLog("connection to the server closed");
       updateBadge();
-      if (state.enabled) scheduleReconnect(1500); // быстрый повтор; alarm — резервный
+      if (state.enabled) scheduleReconnect(1500); // quick retry; the alarm is the fallback
     };
-    ws.onerror = () => { /* onclose последует */ };
+    ws.onerror = () => { /* onclose will follow */ };
     ws.onmessage = (ev) => onMessage(ev.data);
   }
 
-  /** Полностью разорвать связь: закрыть сокет, снять отладку, отменить реконнект. */
+  /** Fully disconnect: close the socket, detach the debugger, cancel reconnect. */
   async function disconnect() {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (state.ws) { try { state.ws.close(); } catch { /* noop */ } }
     state.ws = null;
     state.connected = false;
-    if (dbg.attached) await releasePersistent(); // не оставлять баннер отладки висеть
+    if (dbg.attached) await releasePersistent(); // don't leave the debugging banner hanging
   }
 
   function send(obj) {
@@ -209,15 +209,15 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     const { id, method, params } = msg;
     try {
       const handler = handlers[method];
-      if (!handler) throw new Error(`неизвестный метод: ${method}`);
-      // Главный гейт мастер-тумблера: пока он выключен, НИ ОДНА команда не
-      // исполняется — включая status/tabs (список вкладок с URL — тоже данные).
-      // Дублируется в requireGranted как страховка.
+      if (!handler) throw new Error(`unknown method: ${method}`);
+      // Main master-switch gate: while it is off, NO command runs — including
+      // status/tabs (a list of tabs with URLs is data too).
+      // Duplicated in requireGranted as a safety net.
       if (!state.enabled) {
-        throw new Error("Мастер-тумблер Dispatch выключен — включи его в popup.");
+        throw new Error("Dispatch is off — turn on the “Master switch” in the Dispatch popup.");
       }
       if (!methodAllowed(method, state.mode)) {
-        throw new Error(`Режим «только чтение»: команда «${method}» заблокирована. Переключи режим в popup Dispatch.`);
+        throw new Error(`Read-only mode: command "${method}" is blocked. Switch the mode to “Full” in the Dispatch popup.`);
       }
       const result = await handler(params || {});
       send({ id, kind: "res", ok: true, result });
@@ -228,60 +228,60 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     }
   }
 
-  // ── проверки безопасности ──────────────────────────────────────────────────
+  // ── security checks ────────────────────────────────────────────────────────
   function requireGranted() {
-    if (!state.enabled) throw new Error("Мастер-тумблер выключен — включи Dispatch в popup.");
-    if (state.grantedTabId == null) throw new Error("Нет вкладки с доступом — открой popup и нажми «Дать доступ к этой вкладке».");
+    if (!state.enabled) throw new Error("Dispatch is off — turn on the “Master switch” in the Dispatch popup.");
+    if (state.grantedTabId == null) throw new Error("No tab has access — open the Dispatch popup and click “Grant access to this tab”.");
   }
 
   /**
-   * Вкладка, на которой будет работать команда. Без tabId — текущая; с tabId —
-   * та, что указана, но ТОЛЬКО если она в наборе вкладок с доступом: доступ
-   * к остальным по-прежнему выдаёт человек в popup или сам агент через select_tab.
-   * В обоих случаях вкладка сверяется с allowlist прямо сейчас.
+   * The tab the command will run on. Without tabId — the current one; with tabId —
+   * the given one, but ONLY if it is in the set of granted tabs: access to others
+   * is still granted by the human in the popup or by the agent via select_tab.
+   * In both cases the tab is checked against the allowlist right now.
    */
   async function grantedTab(tabId) {
     requireGranted();
     const id = tabId ?? state.grantedTabId;
     if (!isGranted(id)) {
-      throw new Error(`Вкладка #${id} без доступа. Вкладки с доступом: ${state.grantedTabs.map((x) => "#" + x).join(", ") || "нет"} — дай доступ в popup или через browser_select_tab.`);
+      throw new Error(`Tab #${id} has no access. Granted tabs: ${state.grantedTabs.map((x) => "#" + x).join(", ") || "none"} — grant access in the Dispatch popup or via browser_select_tab.`);
     }
     let tab;
     try {
       tab = await chrome.tabs.get(id);
     } catch {
       forgetTab(id);
-      throw new Error(`Вкладка с доступом #${id} закрыта — дай доступ заново.`);
+      throw new Error(`Granted tab #${id} was closed — grant access again.`);
     }
     if (state.allowlist.length) {
-      const host = hostOf(tab.url); // null для about:, chrome: и прочих непарсируемых
+      const host = hostOf(tab.url); // null for about:, chrome: and other unparseable URLs
       if (host === null || !hostAllowed(host, state.allowlist)) {
-        throw new Error(`Хост «${host ?? tab.url ?? "?"}» не в allowlist. Разреши его в popup или очисти список.`);
+        throw new Error(`Host "${host ?? tab.url ?? "?"}" is not in the allowlist. Allow it in the Dispatch popup or clear the list.`);
       }
     }
     return tab;
   }
 
-  // ── шильдик на странице: видно, какая вкладка под контролем ────────────────
-  // Бейдж на иконке виден только рядом с иконкой; шильдик показывает это прямо
-  // на самой странице, чтобы вкладку под агентом нельзя было спутать.
+  // ── on-page badge: shows which tab is under control ────────────────────────
+  // The icon badge is only visible next to the icon; the on-page badge shows it
+  // right on the page, so an agent-controlled tab can't be mistaken for another.
   async function paintShield(tabId, mode) {
     if (tabId == null) return;
     try {
       const tab = await chrome.tabs.get(tabId);
-      if (!isInjectable(tab.url)) return; // на служебных страницах скрипты запрещены
+      if (!isInjectable(tab.url)) return; // scripts are forbidden on internal pages
       await chrome.scripting.executeScript({
         target: { tabId }, world: "ISOLATED", func: pageShield, args: [mode],
       });
-    } catch { /* вкладка закрыта или недоступна — шильдик не критичен */ }
+    } catch { /* tab closed or unavailable — the badge is not critical */ }
   }
   const showShield = (tabId) => paintShield(tabId, state.mode);
   const hideShield = (tabId) => paintShield(tabId, null);
 
   /**
-   * Дать вкладке доступ и сделать её текущей. Остальные вкладки набора доступ
-   * НЕ теряют. Debug-сессия привязана к текущей вкладке: если она шла на другой —
-   * закрывается (буферы перехвата — про одну страницу, смешивать их нельзя).
+   * Grant a tab access and make it current. Other tabs in the set do NOT lose
+   * access. The debug session is bound to the current tab: if it was on another
+   * one, it is closed (capture buffers belong to one page and must not be mixed).
    */
   async function grantAccess(tab) {
     if (dbg.attached && dbg.tabId !== tab.id) await releasePersistent();
@@ -292,7 +292,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     await showShield(tab.id);
   }
 
-  /** Убрать вкладку из набора (в памяти); текущей становится последняя выданная. */
+  /** Remove a tab from the set (in memory); the most recently granted one becomes current. */
   function forgetTab(tabId) {
     state.grantedTabs = state.grantedTabs.filter((id) => id !== tabId);
     if (state.grantedTabId === tabId) state.grantedTabId = state.grantedTabs.at(-1) ?? null;
@@ -300,7 +300,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     updateBadge();
   }
 
-  /** Забрать доступ у одной вкладки: снять перехват, если он на ней, и шильдик. */
+  /** Revoke access from one tab: stop capture if it runs there, and remove the badge. */
   async function revokeTab(tabId) {
     if (!isGranted(tabId)) return;
     if (dbg.attached && dbg.tabId === tabId) await releasePersistent();
@@ -308,14 +308,14 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     await hideShield(tabId);
   }
 
-  /** Список вкладок с доступом с живыми title/url — для popup и status. */
+  /** Granted tabs with live title/url — for the popup and status. */
   async function grantedTabsInfo() {
     const out = [];
     for (const id of state.grantedTabs) {
       try {
         const t = await chrome.tabs.get(id);
         out.push({ id, title: t.title || "", url: t.url || "", current: id === state.grantedTabId });
-      } catch { /* закрылась — onTabRemoved уберёт */ }
+      } catch { /* closed — onTabRemoved will clean up */ }
     }
     return out;
   }
@@ -324,15 +324,15 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
   function requireInjectable(tab) {
     if (!isInjectable(tab.url)) {
-      throw new Error(`Служебная страница (${tab.url || "?"}) — Chrome запрещает здесь скрипты и захват. Дай доступ обычному сайту (http/https).`);
+      throw new Error(`Internal page (${tab.url || "?"}) — Chrome forbids scripts and capture here. Grant access to a regular site (http/https).`);
     }
   }
 
   /**
-   * allowlist сверяется с URL ВЕРХНЕГО фрейма вкладки, а действие по ref вида
-   * «3:e12» уходит внутрь вложенного — а там может быть чужой хост (реклама,
-   * встроенный виджет, чей угодно iframe). Поэтому перед действием во фрейме
-   * спрашиваем его собственный location и проверяем отдельно.
+   * The allowlist is checked against the tab's TOP frame URL, but an action on a
+   * ref like "3:e12" goes into a nested frame — which may be a foreign host (ads,
+   * an embedded widget, anyone's iframe). So before acting in a frame we ask
+   * for its own location and check it separately.
    */
   async function requireFrameAllowed(tabId, frameId) {
     if (!state.allowlist.length) return;
@@ -343,14 +343,14 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       });
       url = r && r[0] && r[0].result ? r[0].result.url : null;
     } catch {
-      throw new Error(`Фрейм #${frameId} недоступен — сделай browser_snapshot заново.`);
+      throw new Error(`Frame #${frameId} is unavailable — take a fresh browser_snapshot.`);
     }
     if (!urlAllowed(url, state.allowlist)) {
-      throw new Error(`Фрейм #${frameId} («${hostOf(url) ?? url ?? "?"}») не в allowlist. Разреши его хост в popup или очисти список.`);
+      throw new Error(`Frame #${frameId} ("${hostOf(url) ?? url ?? "?"}") is not in the allowlist. Allow its host in the Dispatch popup or clear the list.`);
     }
   }
 
-  // ── исполнение в странице (chrome.scripting) ───────────────────────────────
+  // ── in-page execution (chrome.scripting) ───────────────────────────────────
   async function runInPage(func, args = [], world = "ISOLATED", frameId = 0, tabId = undefined) {
     const tab = await grantedTab(tabId);
     requireInjectable(tab);
@@ -358,12 +358,12 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     const target = frameId ? { tabId: tab.id, frameIds: [frameId] } : { tabId: tab.id };
     const res = await chrome.scripting.executeScript({ target, world, func, args });
     const r = res && res[0] ? res[0].result : undefined;
-    if (r && r.ok === false) throw new Error(r.error || "ошибка выполнения в странице");
+    if (r && r.ok === false) throw new Error(r.error || "in-page execution error");
     return r;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // CDP-менеджер: единственная точка доступа к chrome.debugger.
+  // CDP manager: the single access point to chrome.debugger.
   // ══════════════════════════════════════════════════════════════════════════
 
   function dbgAttach(tabId) {
@@ -373,7 +373,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         if (e) {
           const m = e.message || "";
           reject(new Error(/already attached/i.test(m)
-            ? `К вкладке уже подключён другой отладчик (закрой DevTools на ней). ${m}`
+            ? `Another debugger is already attached to the tab (close DevTools on it). ${m}`
             : `CDP attach: ${m}`));
         } else resolve();
       });
@@ -395,17 +395,17 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     });
   }
 
-  // Все операции, трогающие attach/detach, идут через ОДНУ очередь. Иначе два
-  // конкурентных вызова на одной вкладке дерутся: второй attach падает с
-  // «already attached», а detach первого убивает сессию второго на полпути.
+  // All operations touching attach/detach go through ONE queue. Otherwise two
+  // concurrent calls on the same tab fight: the second attach fails with
+  // "already attached", and the first one's detach kills the second's session midway.
   let cdpQueue = Promise.resolve();
   function cdpSerial(fn) {
-    const run = cdpQueue.then(fn, fn); // сбой предыдущей операции не рвёт очередь
+    const run = cdpQueue.then(fn, fn); // a failed previous operation doesn't break the queue
     cdpQueue = run.then(() => {}, () => {});
     return run;
   }
 
-  /** Разовая CDP-операция: переиспользует активную сессию или поднимает временную. */
+  /** One-off CDP operation: reuses the active session or spins up a temporary one. */
   async function rawWithTempCdp(tabId, fn) {
     const reuse = dbg.attached && dbg.tabId === tabId;
     if (!reuse) await dbgAttach(tabId);
@@ -421,10 +421,10 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     await dbgSend(tabId, "Log.enable", {}).catch(() => {});
   }
 
-  // raw* — «сырые» версии без очереди: их можно звать ИЗНУТРИ cdpSerial.
-  // Публичные обёртки ниже сериализуют вызовы извне (иначе — дедлок на себе).
+  // raw* — "raw" versions without the queue: safe to call from INSIDE cdpSerial.
+  // The public wrappers below serialize outside calls (otherwise — self-deadlock).
 
-  /** Гарантировать постоянную debug-сессию на вкладке (для перехвата/эмуляции). */
+  /** Ensure a persistent debug session on the tab (for capture/emulation). */
   async function rawEnsurePersistent(tabId) {
     if (dbg.persistent && dbg.attached && dbg.tabId === tabId) return;
     if (dbg.attached) await rawReleasePersistent();
@@ -433,7 +433,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     dbg.attached = true;
     dbg.persistent = true;
     await enableDomains(tabId);
-    pushLog(`debug-сессия открыта на вкладке #${tabId}`);
+    pushLog(`debug session opened on tab #${tabId}`);
   }
   const ensurePersistent = (tabId) => cdpSerial(() => rawEnsurePersistent(tabId));
 
@@ -451,29 +451,29 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
   const releasePersistent = () => cdpSerial(rawReleasePersistent);
 
   function requirePersistent() {
-    if (!dbg.persistent) throw new Error("Перехват не включён — сначала вызови browser_debug_start.");
+    if (!dbg.persistent) throw new Error("Capture is not enabled — call browser_debug_start first.");
   }
 
   /**
-   * Гейт на ЧТЕНИЕ буферов перехвата. Мало того, что сессия включена: она должна
-   * идти на вкладке с доступом, а та — проходить allowlist прямо сейчас.
-   * Без этого allowlist обходился бы в обе стороны: буферы копятся сами, вне
-   * команд, поэтому одной проверки в момент debug_start недостаточно.
+   * Gate for READING capture buffers. The session being on is not enough: it must
+   * run on a granted tab, and that tab must pass the allowlist right now.
+   * Without this the allowlist could be bypassed both ways: buffers fill on their
+   * own, outside commands, so a single check at debug_start time is not enough.
    */
   async function requireDebugAccess() {
     const tab = await grantedTab();
     requirePersistent();
     if (dbg.tabId !== tab.id) {
-      throw new Error(`Перехват идёт на вкладке #${dbg.tabId}, а доступ выдан #${tab.id} — вызови browser_debug_start заново.`);
+      throw new Error(`Capture is running on tab #${dbg.tabId}, but access is granted to #${tab.id} — call browser_debug_start again.`);
     }
     return tab;
   }
 
   /**
-   * Вкладка с доступом ушла на хост вне allowlist — рвём перехват и чистим
-   * буферы. Команды-то проверяются перед выполнением, а вот CDP пишет сеть и
-   * консоль сам по себе: без этого достаточно было бы увести вкладку на чужой
-   * сайт, чтобы его трафик осел в буфере.
+   * A granted tab navigated to a host outside the allowlist — stop capture and
+   * clear the buffers. Commands are checked before they run, but CDP records
+   * network and console on its own: without this, simply steering the tab to a
+   * foreign site would let its traffic land in the buffer.
    */
   async function dropCaptureOutsideAllowlist(tabId) {
     if (!state.allowlist.length) return;
@@ -482,10 +482,10 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     try { url = (await chrome.tabs.get(tabId)).url; } catch { return; }
     if (urlAllowed(url, state.allowlist)) return;
     await releasePersistent();
-    pushLog(`перехват снят: вкладка ушла на «${hostOf(url) ?? url ?? "?"}» вне allowlist`);
+    pushLog(`capture stopped: tab navigated to "${hostOf(url) ?? url ?? "?"}" outside the allowlist`);
   }
 
-  // ── обработка CDP-событий ──────────────────────────────────────────────────
+  // ── CDP event handling ─────────────────────────────────────────────────────
   function addNet(rec) {
     if (!dbg.netById.has(rec.requestId)) {
       dbg.netById.set(rec.requestId, rec);
@@ -504,7 +504,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
   function handleCdpEvent(source, method, params) {
     if (!dbg.persistent || source.tabId !== dbg.tabId) return;
-    try { dispatchCdpEvent(method, params); } catch { /* защита буфера */ }
+    try { dispatchCdpEvent(method, params); } catch { /* protect the buffer */ }
   }
 
   function dispatchCdpEvent(method, params) {
@@ -557,7 +557,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         pushConsole({
           kind: "exception",
           level: "error",
-          text: (d.exception && d.exception.description) || d.text || "необработанное исключение",
+          text: (d.exception && d.exception.description) || d.text || "uncaught exception",
           url: d.url,
           line: d.lineNumber,
           ts: now(),
@@ -576,11 +576,11 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     if (source.tabId === dbg.tabId) {
       dbg.attached = false;
       dbg.persistent = false;
-      pushLog(`debug-сессия отсоединена (${reason})`);
+      pushLog(`debug session detached (${reason})`);
     }
   }
 
-  // ── скриншоты ──────────────────────────────────────────────────────────────
+  // ── screenshots ────────────────────────────────────────────────────────────
   async function fullPageShot(tabId) {
     return withTempCdp(tabId, async () => {
       const m = await dbgSend(tabId, "Page.getLayoutMetrics");
@@ -594,18 +594,18 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     });
   }
 
-  // ── эмуляция ───────────────────────────────────────────────────────────────
+  // ── emulation ──────────────────────────────────────────────────────────────
   async function emulate(params) {
     const tab = await grantedTab();
     if (params.reset) {
       await releasePersistent();
-      return { ok: true, reset: true, note: "Все override'ы сняты, debug-сессия закрыта." };
+      return { ok: true, reset: true, note: "All overrides cleared, debug session closed." };
     }
     await ensurePersistent(tab.id);
     const applied = [];
     if (params.device) {
       const d = DEVICES[params.device];
-      if (!d) throw new Error(`Неизвестное устройство «${params.device}». Доступны: ${Object.keys(DEVICES).join(", ")}`);
+      if (!d) throw new Error(`Unknown device "${params.device}". Available: ${Object.keys(DEVICES).join(", ")}`);
       await dbgSend(tab.id, "Emulation.setDeviceMetricsOverride", { width: d.w, height: d.h, deviceScaleFactor: d.dsf, mobile: d.mobile });
       await dbgSend(tab.id, "Emulation.setUserAgentOverride", { userAgent: d.ua });
       applied.push(`device:${params.device}`);
@@ -629,14 +629,14 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       applied.push("geolocation");
     }
     dbg.emulation = applied;
-    return { ok: true, applied, note: "Эмуляция активна, пока идёт debug-сессия (виден баннер отладки Chrome)." };
+    return { ok: true, applied, note: "Emulation stays active while the debug session runs (Chrome shows its debugging banner)." };
   }
 
-  // ── точный ввод (CDP Input) ────────────────────────────────────────────────
+  // ── precise input (CDP Input) ──────────────────────────────────────────────
   async function pressKey(params) {
     const tab = await grantedTab();
     const key = params.key;
-    if (!key) throw new Error("не указана клавиша (key)");
+    if (!key) throw new Error("no key specified (key)");
     if (params.selector) await runInPage(pageFocus, [params.selector], "ISOLATED");
     const spec = KEY_MAP[key] || (key.length === 1
       ? { key, code: "Key" + key.toUpperCase(), keyCode: key.toUpperCase().charCodeAt(0), text: key }
@@ -652,19 +652,19 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     });
   }
 
-  // ── навигация: ждём complete ───────────────────────────────────────────────
+  // ── navigation: wait for complete ──────────────────────────────────────────
   function waitComplete(tabId, timeoutMs) {
     return new Promise((resolve) => {
       const done = () => { chrome.tabs.onUpdated.removeListener(listener); clearTimeout(timer); resolve(); };
       const listener = (id, info) => { if (id === tabId && info.status === "complete") done(); };
       const timer = setTimeout(done, timeoutMs);
       chrome.tabs.onUpdated.addListener(listener);
-      // Если уже complete — завершаем сразу.
+      // If already complete — finish right away.
       chrome.tabs.get(tabId).then((t) => { if (t.status === "complete") done(); }).catch(done);
     });
   }
 
-  // ── обработчики команд ─────────────────────────────────────────────────────
+  // ── command handlers ───────────────────────────────────────────────────────
   const handlers = {
     async status() {
       const granted = await grantedTabsInfo();
@@ -685,57 +685,57 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       const tabs = await chrome.tabs.query({});
       return tabs.map((t) => ({
         id: t.id, title: t.title, url: t.url, active: t.active,
-        granted: isGranted(t.id),            // можно читать/действовать по tabId
-        current: t.id === state.grantedTabId, // на ней работают команды без tabId
+        granted: isGranted(t.id),            // can be read/acted on by tabId
+        current: t.id === state.grantedTabId, // commands without tabId run on it
       }));
     },
 
     async select_tab({ tabId }) {
       const tab = await chrome.tabs.get(tabId);
-      // Агент переключает доступ сам, поэтому allowlist — единственная граница:
-      // на вкладку вне списка переключиться нельзя.
+      // The agent switches access itself, so the allowlist is the only boundary:
+      // switching to a tab outside the list is not allowed.
       if (!urlAllowed(tab.url, state.allowlist)) {
-        throw new Error(`Доступ к «${tab.url || "?"}» запрещён: хост не в allowlist. Разреши его в popup или очисти список.`);
+        throw new Error(`Access to "${tab.url || "?"}" denied: host is not in the allowlist. Allow it in the Dispatch popup or clear the list.`);
       }
       await grantAccess(tab);
       return { grantedTabId: tab.id, title: tab.title, url: tab.url, grantedTabs: state.grantedTabs };
     },
 
     async open_tab({ url, active, grant }) {
-      // Проверяем и пустой url: без него откроется about:blank, у которого хоста
-      // нет, — при непустом allowlist заводить такую вкладку нельзя.
+      // Check an empty url too: without one, about:blank opens, which has no host —
+      // with a non-empty allowlist such a tab must not be created.
       if (!urlAllowed(url || "", state.allowlist)) {
-        throw new Error(`Открытие «${url || "пустой вкладки"}» запрещено: хост не в allowlist. Разреши его в popup или очисти список.`);
+        throw new Error(`Opening "${url || "a blank tab"}" denied: host is not in the allowlist. Allow it in the Dispatch popup or clear the list.`);
       }
       const tab = await chrome.tabs.create({ url: url || undefined, active: active !== false });
-      // По умолчанию даём доступ новой вкладке — агент её явно открыл.
+      // Grant access to the new tab by default — the agent opened it explicitly.
       if (grant !== false) await grantAccess(tab);
       await waitComplete(tab.id, 30000).catch(() => {});
       const t = await chrome.tabs.get(tab.id);
       return { tabId: t.id, url: t.url, title: t.title, granted: isGranted(t.id) };
     },
 
-    // Закрыть можно ТОЛЬКО вкладку с доступом: иначе агент мог бы закрыть любую
-    // вкладку браузера по чужому id. Чтобы закрыть другую — сначала select_tab.
+    // Only a GRANTED tab can be closed: otherwise the agent could close any browser
+    // tab by someone else's id. To close another one — select_tab first.
     async close_tab({ tabId }) {
       let tab;
       try {
         tab = await grantedTab(tabId);
       } catch (e) {
         if (tabId != null && !isGranted(tabId)) {
-          throw new Error(`Закрыть можно только вкладку с доступом (${state.grantedTabs.map((x) => "#" + x).join(", ") || "нет"}), а не #${tabId}. Сначала дай доступ через browser_select_tab.`);
+          throw new Error(`Only a granted tab can be closed (${state.grantedTabs.map((x) => "#" + x).join(", ") || "none"}), not #${tabId}. Grant access via browser_select_tab first.`);
         }
         throw e;
       }
       await chrome.tabs.remove(tab.id);
-      forgetTab(tab.id); // не ждать onTabRemoved: следующая команда уже должна видеть новый набор
+      forgetTab(tab.id); // don't wait for onTabRemoved: the next command must already see the new set
       return { closed: tab.id, grantedTabs: state.grantedTabs, grantedTabId: state.grantedTabId };
     },
 
     async navigate({ url, tabId }) {
       const tab = await grantedTab(tabId);
       if (!urlAllowed(url, state.allowlist)) {
-        throw new Error(`Переход на «${url}» запрещён: хост не в allowlist. Разреши его в popup или очисти список.`);
+        throw new Error(`Navigation to "${url}" denied: host is not in the allowlist. Allow it in the Dispatch popup or clear the list.`);
       }
       await chrome.tabs.update(tab.id, { url });
       await waitComplete(tab.id, 30000);
@@ -746,7 +746,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     async snapshot({ tabId } = {}) {
       const tab = await grantedTab(tabId);
       requireInjectable(tab);
-      // allFrames: снимок со ВСЕХ инъектируемых фреймов; ref = "<frameId>:<localRef>".
+      // allFrames: snapshot from ALL injectable frames; ref = "<frameId>:<localRef>".
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id, allFrames: true }, world: "ISOLATED", func: pageSnapshot,
       });
@@ -757,9 +757,9 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         const v = r.result;
         if (!v || !v.ok) continue;
         if (r.frameId === 0) {
-          url = v.url; title = v.title; // верхний фрейм уже проверен grantedTab()
+          url = v.url; title = v.title; // the top frame is already checked by grantedTab()
         } else if (!urlAllowed(v.url, state.allowlist)) {
-          skippedFrames++; // вложенный фрейм на чужом хосте — его содержимое не отдаём
+          skippedFrames++; // nested frame on a foreign host — its content is withheld
           continue;
         }
         for (const el of v.elements) elements.push({ ...el, ref: `${r.frameId}:${el.ref}`, frameId: r.frameId });
@@ -805,23 +805,23 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       const tab = await grantedTab(tabId);
       requireInjectable(tab);
       if (fullPage) return fullPageShot(tab.id);
-      // Видимая область: для активной вкладки — быстрый путь без баннера.
+      // Visible area: for the active tab — the fast path, no banner.
       if (tab.active) {
         const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
         return { data: dataUrl.split(",")[1], format: "png", fullPage: false };
       }
-      // Неактивная вкладка: captureVisibleTab снял бы не ту — идём через CDP.
+      // Inactive tab: captureVisibleTab would capture the wrong one — go through CDP.
       return withTempCdp(tab.id, async () => {
         const s = await dbgSend(tab.id, "Page.captureScreenshot", { format: "png" });
         return { data: s.data, format: "png", fullPage: false };
       });
     },
 
-    // ── отладка: перехват сети/консоли ──
+    // ── debugging: network/console capture ──
     async debug_start() {
       const tab = await grantedTab();
       await ensurePersistent(tab.id);
-      return { ok: true, attached: true, tabId: tab.id, note: "Перехват console/network включён. Баннер отладки Chrome виден до browser_debug_stop." };
+      return { ok: true, attached: true, tabId: tab.id, note: "Console/network capture enabled. Chrome's debugging banner stays visible until browser_debug_stop." };
     },
 
     async debug_stop() {
@@ -854,7 +854,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
     async network_body({ requestId }) {
       await requireDebugAccess();
-      if (!requestId) throw new Error("не указан requestId (возьми из browser_network)");
+      if (!requestId) throw new Error("no requestId specified (take one from browser_network)");
       const r = await dbgSend(dbg.tabId, "Network.getResponseBody", { requestId });
       const body = r.body || "";
       const LIMIT = 200000;
@@ -866,7 +866,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     },
   };
 
-  // ── сообщения от popup ─────────────────────────────────────────────────────
+  // ── popup messages ─────────────────────────────────────────────────────────
   async function handlePopup(msg) {
     switch (msg.type) {
       case "getState":
@@ -886,8 +886,8 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         state.enabled = !!msg.value;
         saveSettings();
         if (state.enabled) { connect(); await forEachGranted(showShield); }
-        else { await disconnect(); await forEachGranted(hideShield); } // выключен = связи нет и шильдика тоже
-        pushLog(state.enabled ? "включено" : "выключено");
+        else { await disconnect(); await forEachGranted(hideShield); } // off = no connection and no badge
+        pushLog(state.enabled ? "enabled" : "disabled");
         updateBadge();
         return { ok: true };
       case "setPort":
@@ -905,32 +905,32 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       case "setMode":
         state.mode = msg.value === "readonly" ? "readonly" : "full";
         saveSettings();
-        pushLog(`режим: ${state.mode}`);
-        if (state.enabled) await forEachGranted(showShield); // перерисовать под новый режим
+        pushLog(`mode: ${state.mode}`);
+        if (state.enabled) await forEachGranted(showShield); // redraw for the new mode
         return { ok: true };
       case "grantActive": {
-        // Добавляет активную вкладку к набору (и делает её текущей); ранее
-        // выданные вкладки доступ сохраняют — так и собирается набор для анализа.
+        // Adds the active tab to the set (and makes it current); previously granted
+        // tabs keep their access — that's how a set for cross-analysis is built.
         const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        if (!tab) return { ok: false, error: "нет активной вкладки" };
+        if (!tab) return { ok: false, error: "no active tab" };
         await grantAccess(tab);
-        pushLog(`доступ выдан: ${tab.title}`);
+        pushLog(`access granted: ${tab.title}`);
         return { ok: true, grantedTabId: tab.id, grantedTitle: tab.title, grantedTabs: state.grantedTabs };
       }
       case "setCurrent": {
-        // Сменить текущую вкладку среди уже выданных — без выдачи новых.
+        // Switch the current tab among already granted ones — without granting new ones.
         const id = Number(msg.tabId);
-        if (!isGranted(id)) return { ok: false, error: `вкладка #${id} без доступа` };
+        if (!isGranted(id)) return { ok: false, error: `tab #${id} has no access` };
         let tab;
-        try { tab = await chrome.tabs.get(id); } catch { forgetTab(id); return { ok: false, error: "вкладка закрыта" }; }
+        try { tab = await chrome.tabs.get(id); } catch { forgetTab(id); return { ok: false, error: "tab is closed" }; }
         await grantAccess(tab);
         return { ok: true, grantedTabId: id };
       }
       case "revokeAccess": {
-        // С tabId — забрать у одной вкладки; без — у всех сразу.
+        // With tabId — revoke from one tab; without — from all at once.
         if (msg.tabId != null) {
           await revokeTab(Number(msg.tabId));
-          pushLog(`доступ забран у #${msg.tabId}`);
+          pushLog(`access revoked from #${msg.tabId}`);
           return { ok: true, grantedTabs: state.grantedTabs };
         }
         if (dbg.attached) await releasePersistent();
@@ -938,20 +938,20 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         state.grantedTabs = [];
         state.grantedTabId = null;
         saveSettings();
-        pushLog("доступ забран у всех вкладок");
+        pushLog("access revoked from all tabs");
         updateBadge();
         await Promise.all(were.map(hideShield));
         return { ok: true, grantedTabs: [] };
       }
       case "stopDebug":
         await releasePersistent();
-        pushLog("перехват остановлен из popup");
+        pushLog("capture stopped from the popup");
         return { ok: true };
       case "setAllowlist":
         state.allowlist = String(msg.value || "")
           .split("\n").map((s) => s.trim()).filter(Boolean);
         saveSettings();
-        // Новый список может запрещать ровно то, что перехватывается прямо сейчас.
+        // The new list may forbid exactly what is being captured right now.
         if (dbg.persistent && dbg.tabId != null) await dropCaptureOutsideAllowlist(dbg.tabId);
         return { ok: true, allowlist: state.allowlist };
       case "reconnect":
@@ -959,24 +959,24 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
         connect();
         return { ok: true };
       default:
-        return { ok: false, error: "неизвестное сообщение popup" };
+        return { ok: false, error: "unknown popup message" };
     }
   }
 
-  // ── реакция на закрытие вкладок ────────────────────────────────────────────
+  // ── reacting to closed tabs ────────────────────────────────────────────────
   function onTabRemoved(tabId) {
     if (tabId === dbg.tabId) { dbg.attached = false; dbg.persistent = false; dbg.tabId = null; }
     if (isGranted(tabId)) {
       forgetTab(tabId);
-      pushLog(`вкладка с доступом #${tabId} закрыта`);
+      pushLog(`granted tab #${tabId} closed`);
     }
     updateBadge();
   }
 
   /**
-   * Навигация стирает шильдик вместе со старым документом — рисуем заново.
-   * И это же единственный момент, когда вкладка с доступом может уехать за
-   * пределы allowlist: тогда перехват надо снять сразу, не дожидаясь команды.
+   * Navigation wipes the badge along with the old document — redraw it.
+   * This is also the only moment a granted tab can leave the allowlist:
+   * then capture must be stopped immediately, without waiting for a command.
    */
   async function onTabUpdated(tabId, info) {
     try {
@@ -985,10 +985,10 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
       if (!state.enabled) return;
       if (info.status !== "complete") return;
       await showShield(tabId);
-    } catch { /* листенер браузера: наверх бросать нечему */ }
+    } catch { /* browser listener: nothing above to throw to */ }
   }
 
-  /** Резервный путь: alarm поднимает связь, если service worker выгружали. */
+  /** Fallback: the alarm restores the connection if the service worker was unloaded. */
   function onKeepalive() {
     if (state.enabled && !state.connected) connect();
   }
@@ -997,7 +997,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     await loadSettings();
     updateBadge();
     if (state.enabled) { connect(); forEachGranted(showShield); }
-    pushLog("service worker запущен");
+    pushLog("service worker started");
   }
 
   return {

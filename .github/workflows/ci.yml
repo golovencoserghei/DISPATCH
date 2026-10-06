@@ -17,7 +17,11 @@ jobs:
         run: npm install
       - name: Typecheck MCP server
         run: npm run typecheck
-      - name: Install Chrome (для page-functions теста)
+      - name: Build MCP server
+        run: npm run build
+      - name: Pack extension
+        run: npm run pack:extension
+      - name: Install Chrome (for the page-functions suite)
         uses: browser-actions/setup-chrome@v1
         id: chrome
       - name: Run tests

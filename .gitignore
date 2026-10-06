@@ -8,3 +8,6 @@ dist/
 tests/.chrome-prof/
 tests/**/.stage3-shot.png
 tests/**/.playlist.json
+
+# launch drafts (not part of the product)
+launch/

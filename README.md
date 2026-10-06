@@ -1,250 +1,231 @@
-# Dispatch
+<p align="center">
+  <img src="extension/icons/icon128.png" width="96" height="96" alt="Dispatch icon">
+</p>
 
-Связка «браузерное расширение + MCP-сервер», которая даёт агенту (Claude) полный
-контроль над **твоим настоящим браузером с твоими живыми сессиями и логинами** —
-навигация, снимок DOM, выполнение JS, клики/ввод, скриншоты. Как Playwright, но по
-твоему реальному профилю, локально, с контролем и отладкой.
+<h1 align="center">Dispatch</h1>
 
-```
-Claude (агент)
-   │  stdio (MCP)
-   ▼
-mcp-server (Node/TS)  ── поднимает ws://127.0.0.1:8765
-   ▲
-   │  WebSocket
-   ▼
-extension (MV3)  ── background.js: обвязка (даёт ядру настоящий chrome)
-                    dispatcher.js: ядро — связь, гейт доступа, команды, CDP
-                    policy.js:     чистые правила доступа
-                    page.js:       функции, исполняемые внутри страницы
-```
+<p align="center">
+  <b>Let your AI agent use your real browser — and stay in control of it.</b><br>
+  A Chrome extension + MCP server for Claude Code, Claude Desktop, Cursor, VS Code and any other MCP client.
+</p>
 
-Ядро не трогает глобальные `chrome`/`WebSocket` — они приходят фасадом в
-`createDispatcher()`. Поэтому вся логика (гейт тумблера, allowlist, границы
-команд, очередь CDP) тестируется в Node на моках, без браузера.
+<p align="center">
+  <a href="https://github.com/golovencoserghei/DISPATCH/actions/workflows/ci.yml"><img src="https://github.com/golovencoserghei/DISPATCH/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/dispatch-browser-mcp"><img src="https://img.shields.io/npm/v/dispatch-browser-mcp" alt="npm"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
+  <a href="README.ru.md">Русская версия</a>
+</p>
 
-## Инструменты
+<!-- DEMO: replace with a 20–30 s GIF — agent opens a logged-in page, snapshots it, clicks, reads network; then the user flips read-only and the next click is refused. -->
 
-**Управление и DOM**
+Headless browsers can't see your logged-in dashboards, SSO-protected tools or
+2FA-gated admin panels. Dispatch gives the agent **your actual Chrome profile**:
+it reads the DOM, clicks, types, takes screenshots and inspects network traffic
+and console — on the tabs you choose.
 
-| MCP-инструмент       | Что делает                                              |
-|----------------------|---------------------------------------------------------|
-| `browser_status`     | Статус соединения, вкладки с доступом, debug-сессии    |
-| `browser_tabs`       | Список открытых вкладок (`granted` — с доступом, `current` — текущая) |
-| `browser_select_tab` | Сделать вкладку текущей и дать ей доступ (в пределах allowlist); остальные доступ сохраняют |
-| `browser_navigate`   | Перейти по URL в вкладке с доступом                    |
-| `browser_snapshot`   | Снимок интерактивных элементов с `ref` (для кликов)     |
-| `browser_get_html`   | outerHTML страницы или узла по селектору                |
-| `browser_eval`       | Выполнить JS в контексте страницы (main world), вернуть JSON |
-| `browser_click`      | Клик по `ref` (из снимка) или CSS-селектору             |
-| `browser_type`       | Ввод текста в поле по `ref`/селектору (+опц. submit)     |
-| `browser_press_key`  | Нажать клавишу через CDP (Enter, Tab, стрелки, символ)  |
-| `browser_scroll`     | Прокрутка страницы/контейнера, `toBottom` для лент      |
-| `browser_wait_for`   | Дождаться появления селектора                            |
-| `browser_screenshot` | Скриншот видимой области или всей страницы (`fullPage`)  |
+Handing an agent your logged-in browser is a big deal, so Dispatch is built
+around **guardrails you can see and flip at any moment**:
 
-**Парсинг**
+| Guardrail | What it does |
+|---|---|
+| 🔴 **Master switch** | Off = the WebSocket is closed. The agent can't even list tabs. |
+| 🌐 **Host allowlist** | Outside the list the agent can't switch to a tab, navigate, open, read or act — checked per host, **per iframe**, and re-checked on every network/console read. |
+| 👁 **Read-only mode** | The agent observes (snapshot, screenshot, network, console) but can't click, type, navigate, run JS or emulate. |
+| 🏷 **On-page badge** | Every tab the agent can touch shows a small “Dispatch · full access / read-only” label. No hidden access. |
+| 🔒 **Locked-down transport** | Local WebSocket only; origin allowlist on the handshake (web pages, `null` and `file://` origins are refused); optional shared token compared in constant time. |
+| 📜 **Action log** | The popup shows what the agent did recently. |
 
-| MCP-инструмент       | Что делает                                              |
-|----------------------|---------------------------------------------------------|
-| `browser_extract`    | Структурный сбор по селекторам (карточки, строки таблиц) |
+## Quick start
 
-**Отладка (постоянная CDP-сессия)**
+**1. Install the extension**
 
-| MCP-инструмент         | Что делает                                            |
-|------------------------|-------------------------------------------------------|
-| `browser_debug_start`  | Включить перехват console + network                   |
-| `browser_debug_stop`   | Выключить перехват, убрать баннер отладки             |
-| `browser_console_logs` | Логи консоли, исключения, предупреждения браузера     |
-| `browser_network`      | Список сетевых запросов (метаданные)                  |
-| `browser_network_body` | Тело ответа конкретного запроса по `requestId`        |
-| `browser_emulate`      | Устройство / viewport / userAgent / geolocation       |
+- Chrome Web Store: *coming soon*
+- Or download `dispatch-extension-v*.zip` from [Releases](https://github.com/golovencoserghei/DISPATCH/releases), unzip it, open `chrome://extensions`, enable **Developer mode** → **Load unpacked** → pick the folder.
 
-## Контроль (это твой реальный браузер!)
+**2. Add the MCP server to your client**
 
-- **Мастер-тумблер** в popup — пока выключен, ни одна команда не выполнится, а
-  соединение с сервером разорвано.
-- **Вкладки с доступом** — их может быть несколько. Кнопка «Дать доступ к этой
-  вкладке» *добавляет* активную вкладку к набору (и делает её текущей), прежние
-  доступ сохраняют. Так удобно раздать агенту несколько страниц для сравнения:
-  команды страницы (`snapshot`, `get_html`, `extract`, `eval`, `screenshot`,
-  `click`, `type`, `scroll`, `wait_for`, `navigate`) принимают необязательный
-  `tabId` любой вкладки из набора, а без `tabId` работают на **текущей** (◉ в
-  popup и на бейдже; клик по строке в popup делает вкладку текущей, ✕ — забирает
-  доступ у одной, «✕ все» — у всех). Вкладка вне набора по `tabId` недоступна,
-  даже если allowlist пуст: доступ ей выдаёт человек в popup или сам агент через
-  `browser_select_tab` / `browser_open_tab`.
-- **Шильдик на странице** — на каждой вкладке с доступом в правом нижнем углу висит
-  маленькая плашка «Dispatch · полный доступ» (зелёная) или «· только чтение»
-  (серая). Видно, какой вкладкой агент управляет, не открывая popup. Плашка
-  исчезает при отзыве доступа и при выключении тумблера, переживает навигацию,
-  живёт в Shadow DOM, не ловит мышь и не попадает в `snapshot` — агенту не мешает.
-- **Allowlist** — фильтр по хостам, ограничивающий агента набором сайтов
-  (пусто = любой хост).
-- **Режим** — Полный или Только чтение.
-- **Лог** — последние действия видны в popup.
+Claude Code:
 
-### Модель доступа — что реально ограничивает агента
-
-Границ ровно две: **мастер-тумблер** и **allowlist**. Понимай их так:
-
-- **Мастер-тумблер выключен** — расширение закрывает WebSocket и снимает debug-сессию.
-  Агенту недоступно вообще ничего, включая список вкладок.
-- **Тумблер включён + allowlist пуст** — агент может переключаться на **любую** вкладку
-  (`browser_select_tab`), открывать любые URL и читать их. Вкладка «с доступом» — это
-  фокус работы агента, а **не** твоё персональное разрешение на каждую вкладку: агент
-  переключает его сам. Если это не то, что тебе нужно, — заполни allowlist.
-- **Тумблер включён + allowlist заполнен** — вот это настоящая граница. Вне списка
-  нельзя ни переключиться на вкладку, ни перейти по URL, ни открыть новую (в том
-  числе пустую), ни выполнить что-либо на уже открытой. Проверяется по **хосту**,
-  порт не различается (`localhost` покрывает `localhost:3000`); `*.example.com`
-  покрывает поддомены; `about:blank` и `file://` хоста не имеют и при непустом
-  allowlist запрещены. Граница держится и по краям страницы:
-  - **вложенные фреймы проверяются отдельно** — у чужого `<iframe>` свой хост,
-    поэтому фреймы вне списка не попадают в `browser_snapshot` (сколько отброшено —
-    в поле `skippedFrames`), а клик/ввод по `ref` вида `3:e12` в такой фрейм
-    отклоняется;
-  - **перехват снимается при уходе за allowlist** — команды проверяются перед
-    выполнением, а CDP пишет сеть и консоль сам по себе. Поэтому, если вкладку с
-    доступом увести на хост вне списка, debug-сессия закрывается, а буферы
-    очищаются; `browser_network` / `browser_console_logs` / `browser_network_body`
-    вдобавок сверяются с allowlist на каждом чтении.
-- **Кнопка «Дать доступ к этой вкладке»** в popup — удобный способ указать агенту
-  стартовые вкладки (набор), а не гарантия, что он останется на них. Набор — это
-  то, что агент видит по `tabId` **сразу**; при пустом allowlist он волен расширить
-  его сам через `browser_select_tab`.
-- **Перехват (debug-сессия) привязан к текущей вкладке**: смена текущей через
-  `browser_select_tab` закрывает сессию и чистит буферы — сеть и консоль двух
-  разных страниц не смешиваются.
-
-Режим **Только чтение** блокирует изменяющие команды — `navigate`, `open_tab`,
-`close_tab`, `click`, `type`, `press_key`, `eval`, `emulate` (агент видит, но не
-действует). `emulate` в этом списке потому, что подмена viewport / User-Agent /
-геолокации меняет то, что видит страница; снять уже включённую эмуляцию из
-read-only нельзя — для этого есть кнопка «Стоп отладки» в popup.
-Наблюдение (snapshot, screenshot, network, console, scroll, extract…) работает всегда;
-переключение вкладок в read-only тоже доступно, поэтому **read-only ≠ агент видит
-только одну вкладку**. Логика — в [extension/policy.js](extension/policy.js), покрыта
-юнит-тестом.
-
-`browser_close_tab` закрывает **только** вкладку с доступом: закрыть чужую вкладку по
-её id нельзя.
-
-- **Данные уходят агенту**: всё, что видит вкладка с доступом (DOM, скриншоты, сеть),
-  передаётся модели. Не давай доступ вкладкам с чувствительными данными без необходимости.
-
-### Безопасность транспорта
-
-- **Origin-allowlist**: на рукопожатии пускаются только `chrome-extension://…` и
-  клиенты вообще без заголовка `Origin` (то есть локальные процессы). Всё остальное
-  получает 403. Именно allowlist, а не «всё, кроме `http(s)://…`»: любая страница
-  может создать `<iframe sandbox="allow-scripts">`, у которого origin непрозрачный и
-  браузер шлёт `Origin: null`, а `ws://127.0.0.1` считается potentially trustworthy,
-  так что и mixed-content такой iframe не остановит. Браузер заголовок `Origin`
-  ставит всегда — поэтому веб-страница сюда не пролезет.
-- **Ready-гейт**: команды уходят клиенту только после валидного `hello` — не «полу-клиенту».
-- **Токен** — единственное, что защищает от **локальных процессов**: origin-check тут
-  бессилен, любой процесс на машине может как не слать `Origin`, так и подделать
-  `chrome-extension://…`. Запусти сервер с `DISPATCH_TOKEN=…` и впиши то же значение
-  в popup (поле «Токен»); без совпадения сервер закрывает соединение. Токен
-  сравнивается за постоянное время (по sha256-дайджестам). По умолчанию он пуст — тогда
-  сервер пишет об этом предупреждение в stderr при старте.
-- **Версия протокола** сверяется в `hello`; расхождение логируется.
-
-Чего эта модель НЕ закрывает: другое расширение в том же браузере тоже имеет
-`chrome-extension://…`-origin, а любой локальный процесс, знающий токен, равен
-расширению. Порог здесь — токен, а не origin.
-
-## Запуск
-
-### 1. MCP-сервер
 ```bash
-cd mcp-server
-npm install
-npm run dev        # поднимет WS на 127.0.0.1:8765
+claude mcp add dispatch -- npx -y dispatch-browser-mcp
 ```
-Порт можно сменить через `DISPATCH_PORT`.
 
-### 2. Расширение
-1. Chrome → `chrome://extensions` → включить **Режим разработчика**.
-2. **Загрузить распакованное** → выбрать папку `extension/`.
-3. Открыть popup Dispatch → включить мастер-тумблер → на нужной вкладке нажать
-   **Дать доступ к этой вкладке**.
+Claude Desktop / Cursor / VS Code / anything that takes an `mcpServers` config:
 
-### 3. Подключить к Claude Code
-В `~/.claude.json` (или через `claude mcp add`). Запускай `tsx` **напрямую**, а не через
-`npm run dev`: `tsx` пробрасывает SIGTERM дочернему процессу, поэтому при остановке сервера
-порт освобождается (обёртка `npm` этого не делает — отсюда `EADDRINUSE`).
 ```json
 {
   "mcpServers": {
     "dispatch": {
-      "command": "<путь>/Dispatch/mcp-server/node_modules/.bin/tsx",
-      "args": ["<путь>/Dispatch/mcp-server/src/index.ts"]
+      "command": "npx",
+      "args": ["-y", "dispatch-browser-mcp"],
+      "env": { "DISPATCH_TOKEN": "pick-a-long-random-string" }
     }
   }
 }
 ```
-Порт можно переопределить через `"env": { "DISPATCH_PORT": "8770" }` (тот же порт задай в popup).
 
-## Тесты
+**3. Grant access**
+
+Open the Dispatch popup → turn on the **Master switch** → paste the same token →
+on the tab you want to work with, click **Grant access to this tab**. Then ask
+your agent something like *“look at the open tab and summarize the failed
+requests”*.
+
+> Without `DISPATCH_TOKEN` any local process could connect to the port; the
+> server prints a warning on start. Set a token on any machine you share.
+
+## What the agent can do
+
+**Pages and DOM**
+
+| Tool | |
+|---|---|
+| `browser_status` | Connection, granted tabs, debug session state |
+| `browser_tabs` | Open tabs (`granted` / `current` flags) |
+| `browser_select_tab` | Make a tab current (within the allowlist) |
+| `browser_open_tab` / `browser_close_tab` | Open a new tab / close a granted one |
+| `browser_navigate` | Go to a URL |
+| `browser_snapshot` | Interactive elements with `ref`s, across same-allowlist iframes |
+| `browser_get_html` | outerHTML of the page or a node |
+| `browser_extract` | Structured scraping by CSS selectors (cards, table rows) |
+| `browser_eval` | Run JS in the page, get JSON back |
+| `browser_click` / `browser_type` / `browser_press_key` | Act by `ref` or selector; keys via CDP |
+| `browser_scroll` / `browser_wait_for` | Scroll (incl. infinite feeds), wait for a selector |
+| `browser_screenshot` | Visible area or full page |
+
+**Debugging (persistent CDP session)**
+
+| Tool | |
+|---|---|
+| `browser_debug_start` / `browser_debug_stop` | Start/stop capturing console and network |
+| `browser_console_logs` | Console output, exceptions, browser warnings |
+| `browser_network` | Captured requests (method, status, type, size, URL) |
+| `browser_network_body` | Response body by `requestId` |
+| `browser_emulate` | Device, viewport, user agent, geolocation |
+
+Page tools take an optional `tabId`, so you can hand the agent several tabs at
+once (e.g. *“compare pricing on these three tabs”*).
+
+## Why Dispatch
+
+- **Your real session.** Works where headless dies: SSO, 2FA, CAPTCHAs you
+  already passed, internal tools, browser extensions you rely on.
+- **Guardrails first.** Allowlist, read-only and the kill switch are enforced in
+  the extension, not by asking the model nicely.
+- **Built for debugging, not just clicking.** Response bodies, console and
+  exceptions from a live, logged-in page — useful for “why does this request
+  fail for my account?”.
+- **Small and auditable.** ~2k lines, no build step for the extension, no
+  telemetry, no remote servers. You can read all of it before trusting it with
+  your browser.
+- **Tested without a browser.** The extension core sits behind a `chrome`
+  facade and runs in Node against mocks; page functions run against headless
+  Chrome in CI.
+
+## Access model in detail
+
+There are exactly two hard boundaries: the **master switch** and the
+**allowlist**.
+
+- **Switch off** — nothing is reachable, not even the tab list.
+- **Switch on, allowlist empty** — the agent may switch to **any** tab, open
+  any URL and read it. “Granted” tabs are the agent's working set, not a
+  per-tab permission: the agent can extend it with `browser_select_tab`. If
+  that's not what you want, fill in the allowlist.
+- **Switch on, allowlist set** — the real boundary. Outside the list the agent
+  can't switch to a tab, navigate, open a tab (even a blank one) or act on an
+  already open one. Matching is by **host** (`localhost` covers
+  `localhost:3000`, `*.example.com` covers subdomains; `about:blank` and
+  `file://` have no host and are refused).
+  - **iframes are checked separately**: off-list frames are left out of
+    `browser_snapshot` (counted in `skippedFrames`), and clicks/typing into
+    them are refused.
+  - **Interception stops when a tab leaves the allowlist**: the debug session
+    is closed and its buffers cleared; network/console reads are re-checked
+    against the allowlist every time.
+
+**Read-only** blocks `navigate`, `open_tab`, `close_tab`, `click`, `type`,
+`press_key`, `eval`, `emulate`. Observation and switching tabs still work, so
+read-only ≠ “one tab only”.
+
+`browser_close_tab` closes only granted tabs.
+
+**Everything a granted tab shows (DOM, screenshots, network) is sent to the
+model.** Don't grant tabs with data you don't want the model provider to see.
+
+### What the transport protects against — and what it doesn't
+
+- Web pages can't connect: the handshake only accepts `chrome-extension://…`
+  origins and clients with no `Origin` header (local processes). Even a
+  sandboxed iframe with `Origin: null` is refused.
+- Commands go to the client only after a valid `hello`; protocol version is
+  checked.
+- **Local processes are stopped only by the token**: any process on your
+  machine can omit or fake `Origin`. Another extension in the same browser also
+  has a `chrome-extension://` origin. The token is the threshold.
+
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `DISPATCH_PORT` | `8765` | Local WebSocket port; set the same port in the popup |
+| `DISPATCH_TOKEN` | — | Shared secret; set the same value in the popup |
+
+## Development
 
 ```bash
-npm install     # ставит корневые зависимости + mcp-server (postinstall)
+npm install          # root + mcp-server (postinstall)
 npm run typecheck
-npm test        # policy + dispatcher + smoke + security + page-functions
+npm test             # policy, dispatcher, smoke, security, release, page-functions
+npm run build        # compile the MCP server to mcp-server/dist
+npm run pack:extension
 ```
 
-- **policy** — правила доступа: read-only, allowlist (хосты, порты, поддомены), парсинг ref.
-- **dispatcher** — ядро расширения на моках `chrome.*`: гейт мастер-тумблера,
-  границы `close_tab`/`select_tab`, allowlist на живых вкладках и на вложенных
-  фреймах, снятие перехвата при уходе за allowlist, очередь CDP, буферы перехвата,
-  реконнект, шильдик, набор из нескольких вкладок с доступом и чтение по `tabId`.
-- **smoke** — MCP-хендшейк, список инструментов, request/response через WS (фейковое расширение).
-- **security** — allowlist origin'ов (веб-origin, `null`, `file://` отклоняются;
-  `chrome-extension://` и клиент без Origin пускаются), ready-гейт, токен, обрыв
-  связи не подвешивает команду.
-- **page-functions** — логика `extension/page.js` на живом headless-Chrome через CDP
-  (тот же механизм, что `chrome.scripting.executeScript({func})`). Бинарь Chrome можно
-  задать через `DISPATCH_CHROME`; без Chrome набор пропускается.
-- **tests/manual/** — прогоны на РЕАЛЬНОМ браузере (`stage3.mjs` — все инструменты;
-  `playlist-export.mjs` — пример сбора данных). Не для CI.
+Run the server from source in your MCP client by pointing it at
+`mcp-server/node_modules/.bin/tsx` with `mcp-server/src/index.ts` as the
+argument. Run `tsx` directly rather than `npm run dev`: `tsx` forwards SIGTERM
+so the port is released on shutdown.
 
-### Почему настоящее расширение не гоняется в автотесте
+```
+MCP client (Claude, Cursor, …)
+   │  stdio (MCP)
+   ▼
+mcp-server (Node/TS) ── ws://127.0.0.1:8765
+   ▲
+   │  WebSocket
+   ▼
+extension (MV3) ── background.js  thin binding to the real chrome.* API
+                   dispatcher.js  core: connection, access gate, commands, CDP
+                   policy.js      pure access rules
+                   page.js        functions injected into the page
+```
 
-Chrome 137+ **намеренно игнорирует `--load-extension`, когда включён удалённый
-отладчик** (`--remote-debugging-port` или `--remote-debugging-pipe`) — иначе malware
-цепляло бы CDP к чужому браузеру ровно так, как это делает Dispatch. Обойти нельзя:
-ни headless, ни headful, ни `--disable-features=DisableLoadExtensionCommandLineSwitch`,
-ни `--enable-unsafe-extension-debugging` защиту не снимают (проверено на Chrome 149).
+**Why the real extension isn't loaded in CI:** Chrome 137+ deliberately ignores
+`--load-extension` when remote debugging is enabled (otherwise malware could
+attach CDP to your browser exactly the way Dispatch does). So the extension
+logic lives in `dispatcher.js` behind a `chrome` facade and is tested against
+mocks, and `page.js` runs in headless Chrome via the same mechanism
+`chrome.scripting` uses. Only the thin `background.js` binding is left to
+`tests/manual/`.
 
-Поэтому логика расширения вынесена в `dispatcher.js` за фасад `chrome` и покрыта
-`tests/dispatcher.mjs` на моках, а `page.js` проверяется на живом Chrome тем же
-механизмом, каким его исполняет `chrome.scripting`. Непокрытым остаётся лишь тонкий
-слой `background.js` (проброс настоящего API) — его смотрит `tests/manual/stage3.mjs`.
+### Notes
 
-CI: [.github/workflows/ci.yml](.github/workflows/ci.yml) — typecheck + весь автономный набор.
+- `ref`s in iframes look like `<frameId>:<localRef>` (e.g. `3:e12`);
+  `eval`/`get_html` run in the top frame.
+- Chrome shows its “being debugged” banner while a CDP session is open. For
+  full-page screenshots and `press_key` it's opened for a split second; for
+  `debug_start`/`emulate` it stays until `browser_debug_stop` or **Stop
+  debugging** in the popup.
+- Capture buffers are ring buffers (500 entries each) in service worker memory.
+- `browser_eval` has no top-level `await`; use `.then()`. Return values must be
+  JSON-serializable.
+- MV3 service workers may be suspended when idle; the server pings every 15 s
+  and the extension reconnects automatically.
+- `EADDRINUSE` on start means another server holds the port — stop it or pick
+  another `DISPATCH_PORT` (and set it in the popup).
 
-## Заметки
-- **iframe**: `browser_snapshot` собирает элементы со всех инъектируемых фреймов; `ref`
-  имеет вид `<frameId>:<localRef>` (например `3:e12`). `browser_click`/`browser_type`
-  по такому ref действуют в нужном фрейме. `eval`/`get_html` работают в верхнем фрейме.
-- **Reconnect**: при обрыве связи расширение переподключается через ~1.5с (быстрый
-  повтор), alarm раз в 30с — резервный путь на случай выгрузки service worker
-  (меньше 30с ставить бессмысленно: Chrome всё равно поднимает период до этого).
-- **Баннер отладки Chrome** появляется, пока активна CDP-сессия. Для full-page скрина и
-  `press_key` она поднимается на доли секунды и сразу снимается. Для
-  `debug_start`/`emulate` держится, пока не вызовешь `browser_debug_stop` (или кнопку
-  «Стоп отладки» в popup).
-- `browser_console_logs` / `browser_network` работают только после `browser_debug_start`
-  (события сети/консоли — потоковые, их надо накапливать в открытой сессии) и только
-  пока вкладка с доступом остаётся в пределах allowlist.
-- Буферы перехвата (сеть/консоль) — кольцевые (по 500 записей) и живут в памяти
-  service worker'а: при его выгрузке очищаются. Пока идёт работа, WS-ping держит SW живым.
-- `browser_eval` не поддерживает top-level `await`; используй `.then()`. Возвращаемое
-  значение должно быть JSON-сериализуемым (DOM-узлы не пройдут).
-- MV3 service worker может выгружаться при простое; сервер шлёт ping каждые 15с, а
-  расширение переподключается по alarm — соединение восстанавливается автоматически.
-- `EADDRINUSE` на старте сервера = на порту 8765 висит прошлый процесс. Убей его
-  (`pkill -f "tsx src/index.ts"`) или задай другой порт через `DISPATCH_PORT` (и тот же
-  порт в popup).
+## License
+
+[MIT](LICENSE)
