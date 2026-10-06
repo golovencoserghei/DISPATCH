@@ -93,6 +93,7 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
       async query(q) {
         let out = tabList;
         if (q && q.active) out = out.filter((t) => t.active);
+        if (q && q.windowId != null) out = out.filter((t) => t.windowId === q.windowId);
         return out.map((t) => ({ ...t }));
       },
       async create({ url, active }) {
@@ -110,6 +111,7 @@ export function mockChrome({ tabs = [], storage = {}, scriptResult = { ok: true 
         calls.updated.push({ id, ...props });
         const t = tabList.find((x) => x.id === id);
         if (t && props.url) { t.url = props.url; t.status = "complete"; }
+        if (t && props.active) for (const x of tabList) if (x.windowId === t.windowId) x.active = x === t;
         return t ? { ...t } : undefined;
       },
       async captureVisibleTab() { return "data:image/png;base64,TEST"; },

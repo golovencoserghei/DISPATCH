@@ -2,7 +2,7 @@
 // Covers what used to be checked only by hand: the master-switch gate,
 // close_tab/select_tab boundaries, allowlist on live tabs, and the CDP queue.
 import { createDispatcher } from "../extension/dispatcher.js";
-import { boot, cmd, MockWebSocket } from "./mock-chrome.mjs";
+import { boot, cmd, mockChrome, MockWebSocket } from "./mock-chrome.mjs";
 import { checker, wait } from "./lib.mjs";
 
 const TABS = [
@@ -568,6 +568,34 @@ const t = checker("\n▶ dispatcher: core on chrome mocks");
   t.check("read-only blocks drag", dr.ok === false && /read-only/i.test(dr.error));
   t.check("read-only blocks file upload", up.ok === false && /read-only/i.test(up.error));
   t.check("read-only allows hover (it only reveals, like scroll)", hv.ok === true, hv);
+}
+
+// ── 18. Mouse actions on a background tab ────────────────────────────────────
+{
+  // Tab 3 is the agent's, tab 1 is what the user is looking at (same window).
+  const { d, ws, chrome } = await boot(createDispatcher, {
+    tabs: TABS, storage: { grantedTabs: [3], grantedTabId: 3 },
+    scriptResult: { ok: true, x: 10, y: 10, inViewport: true, name: "menu" },
+  });
+  const activations = () => chrome._calls.updated.filter((u) => "active" in u).map((u) => u.id);
+  const dr = await cmd(d, ws, "drag", { fromSelector: "#a", toSelector: "#b" });
+  t.check("drag on a background tab: shown for the action, then the user's tab is back",
+    dr.ok === true && activations().join() === "3,1" && chrome._tabs().find((x) => x.id === 1).active === true, { dr, a: activations() });
+  const hv = await cmd(d, ws, "hover", { selector: "#menu" });
+  t.check("hover on a background tab brings it to the front and leaves it there (hiding drops the hover)",
+    hv.ok === true && activations().join() === "3,1,3" && hv.result.broughtToFront === true, { hv, a: activations() });
+  await cmd(d, ws, "hover", { selector: "#menu" });
+  t.check("hover on the tab already in front switches nothing", activations().length === 3);
+}
+
+// ── 19. A popup click right at worker start isn't lost ───────────────────────
+{
+  const chrome = mockChrome({ tabs: TABS, storage: { enabled: false } });
+  const d = createDispatcher({ chrome, WebSocketImpl: MockWebSocket, now: () => 0 });
+  const starting = d.init();                                   // settings still loading…
+  await d.handlePopup({ type: "setEnabled", value: true });   // …when the user flips the switch
+  await starting;
+  t.check("switch flipped during startup stays on", d.state.enabled === true);
 }
 
 process.exit(t.done("dispatcher") ? 0 : 1);

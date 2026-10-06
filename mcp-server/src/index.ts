@@ -208,6 +208,7 @@ server.registerTool(
     description:
       "Move the mouse over an element (real mouse event via CDP, so CSS :hover works) — " +
       "reveals menus, tooltips and row actions that only appear on mouse-over. Top frame only. " +
+      "A tab behind another one is brought to the front and left there (hiding it again would drop the hover). " +
       "Allowed in read-only mode.",
     inputSchema: {
       ref: z.string().optional().describe("ref from snapshot"),
@@ -225,7 +226,8 @@ server.registerTool(
     description:
       "Drag one element onto another: kanban cards, sortable lists, sliders, drop zones. " +
       "Works for both mouse-driven widgets and native HTML5 drag-and-drop. Top frame only; " +
-      "the source is scrolled into view and the target must be visible at the same time.",
+      "the source is scrolled into view and the target must be visible at the same time. " +
+      "A tab behind another one is shown for the drag, then the user's tab is brought back.",
     inputSchema: {
       fromRef: z.string().optional().describe("ref of the element to drag"),
       fromSelector: z.string().optional().describe("CSS selector of the element to drag (if no fromRef)"),

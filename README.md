@@ -282,6 +282,13 @@ without one.
   that says so, instead of hanging; the user answers it in the browser.
 - `browser_hover`, `browser_drag` and `browser_upload_file` work in the top
   frame (mouse coordinates of a cross-origin iframe aren't knowable).
+- **Your mouse is never moved.** Hover and drag are emulated inside the tab via
+  CDP. But Chrome only takes mouse moves in a tab that is rendered, so if the
+  agent's tab is behind yours: `drag` shows it for the action and switches
+  back; `hover` brings it to the front and leaves it there, since hiding the
+  tab would close the menu it opened. Clicks, typing, uploads and dialogs work
+  in a background tab without switching. In a background tab Chrome dismisses
+  dialogs by itself, so nothing freezes there.
   `hover` is allowed in read-only mode, `drag` and `upload_file` are not.
 - `ref`s in iframes look like `<frameId>:<localRef>` (e.g. `3:e12`);
   `eval`/`get_html` run in the top frame.

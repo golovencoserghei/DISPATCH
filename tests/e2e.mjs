@@ -2,6 +2,10 @@
 // Branded Chrome 137+ refuses --load-extension next to remote debugging, but
 // Chromium and Chrome for Testing still accept both — so this suite needs one of
 // those ($DISPATCH_E2E_BROWSER, or `chromium` in PATH) and is skipped otherwise.
+//
+// DISPATCH_E2E_BACKGROUND=1 runs a visible browser with the agent's tab BEHIND
+// the user's tab — the everyday setup, which headless mode can't reproduce
+// (in headless every tab renders). Needs a display, so it's for local runs.
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -17,6 +21,7 @@ if (spawnSync("which", [BROWSER]).status !== 0) {
   process.exit(0);
 }
 
+const BACKGROUND = process.env.DISPATCH_E2E_BACKGROUND === "1";
 const MCP_PORT = 8795, CDP_PORT = 9566;
 const EXT = fileURLToPath(new URL("../extension", import.meta.url));
 const tmp = mkdtempSync(join(tmpdir(), "dispatch-e2e-"));
@@ -50,12 +55,12 @@ await new Promise((r) => http.listen(0, "127.0.0.1", r));
 const pageUrl = `http://127.0.0.1:${http.address().port}/`;
 
 const browser = spawn(BROWSER, [
-  "--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run",
+  ...(BACKGROUND ? ["--window-size=1100,800"] : ["--headless=new"]), "--no-sandbox", "--disable-gpu", "--no-first-run",
   `--user-data-dir=${join(tmp, "profile")}`, `--remote-debugging-port=${CDP_PORT}`,
   `--load-extension=${EXT}`, `--disable-extensions-except=${EXT}`, "about:blank",
 ], { stdio: "ignore" });
 const srv = startServer({ port: MCP_PORT });
-const t = checker("\n▶ e2e: real extension + server + page");
+const t = checker(`\n▶ e2e: real extension + server + page${BACKGROUND ? " (agent tab in the background)" : ""}`);
 
 function cleanup() { srv.close(); browser.kill(); http.close(); rmSync(tmp, { recursive: true, force: true }); }
 
@@ -70,7 +75,15 @@ async function popupSend(extId, messages) {
     ws.on("message", (raw) => { const m = JSON.parse(raw); if (m.id === mid) res(m.result); });
     ws.send(JSON.stringify({ id: mid, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
   });
-  for (const m of messages) await evaluate(`chrome.runtime.sendMessage(${JSON.stringify(m)})`);
+  // The page may still be loading (slower with a visible browser): retry until
+  // chrome.runtime is there and the worker answers.
+  for (const m of messages) {
+    for (let i = 0; i < 40; i++) {
+      const r = await evaluate(`chrome.runtime.sendMessage(${JSON.stringify(m)})`);
+      if (r && !r.exceptionDetails && r.result?.value?.ok) break;
+      await wait(250);
+    }
+  }
   ws.close();
 }
 
@@ -94,17 +107,30 @@ async function main() {
   }
   t.check("extension connected to the server", status.ok && /"connected": true/.test(status.text), status.text);
 
-  const open = await srv.callTool("browser_open_tab", { url: pageUrl });
+  const open = await srv.callTool("browser_open_tab", { url: pageUrl, active: !BACKGROUND });
   t.check("opened and granted the test page", open.ok, open.text);
+  let userTab = null;
+  if (BACKGROUND) {
+    userTab = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/new?data:text/html,<h1>user's tab</h1>`, { method: "PUT" })).json();
+    await wait(500);
+  }
+  const agentInFront = async () => JSON.parse((await srv.callTool("browser_tabs")).text).find((x) => x.current).active;
+  // Put the user's tab back in front, as if they kept working in it.
+  const userToFront = async () => { await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${userTab.id}`); await wait(300); };
   const js = async (expr) => JSON.parse((await srv.callTool("browser_eval", { expression: expr })).text);
 
   const hv = await srv.callTool("browser_hover", { selector: "#h" });
   t.check("hover: CSS :hover applies", hv.ok && (await js("getComputedStyle(h).backgroundColor")) === "rgb(255, 0, 0)", hv.text);
+  if (BACKGROUND) {
+    t.check("hover: the agent's tab stays in front (hiding it would drop the hover)", await agentInFront());
+    await userToFront();
+  }
 
   const dr = await srv.callTool("browser_drag", { fromSelector: "#src", toSelector: "#dst" });
   t.check("drag: native HTML5 drop delivered", dr.ok && (await js("log")).includes("drop:card"), dr.text);
   const sl = await srv.callTool("browser_drag", { fromSelector: "#knob", toSelector: "#dst" });
   t.check("drag: pointer-driven widget moves", sl.ok && (await js("log")).includes("slid"), sl.text);
+  if (BACKGROUND) t.check("drag: the user's tab is back in front", !(await agentInFront()));
 
   const up = await srv.callTool("browser_upload_file", { selector: "#f", files: [upload] });
   t.check("upload: the page receives the file", up.ok && (await js("log")).includes("file:hello.txt/5"), up.text);
@@ -121,6 +147,12 @@ async function main() {
   const pr = await srv.callTool("browser_click", { selector: "#name", dialog: "accept", promptText: "Ada" });
   t.check("prompt answered with promptText", pr.ok && (await js("window.named")) === "Ada", pr.text);
 
+  if (BACKGROUND) {
+    // Chrome dismisses dialogs that a background tab opens — nothing freezes.
+    const bg = await srv.callTool("browser_click", { selector: "#ask" });
+    t.check("unarmed dialog in a background tab is dismissed by Chrome", bg.ok && (await js("window.answer")) === false, bg.text);
+    return;
+  }
   // Last: an unarmed dialog freezes the page for good.
   const t0 = Date.now();
   const frozen = await srv.callTool("browser_click", { selector: "#ask" });

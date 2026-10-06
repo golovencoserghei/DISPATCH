@@ -29,6 +29,11 @@ const PROBE_TIMEOUT_MS = 1500;
 // opens a moment later (setTimeout, after a fetch) before detaching.
 const DIALOG_GRACE_MS = 300;
 const DRAG_STEPS = 5;
+// Mouse moves are acknowledged together with a rendered frame. A hidden tab
+// renders none, so hover/drag bring the agent's tab to the front first, and
+// never wait longer than MOUSE_TIMEOUT_MS for the page to take the input.
+const SHOW_TAB_MS = 250;
+const MOUSE_TIMEOUT_MS = 5000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -721,8 +726,27 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     return params.dialog ? withDialog(tab.id, params.dialog, params.promptText, send) : withTempCdp(tab.id, send);
   }
 
-  const mouse = (tabId, type, x, y, buttons = 0) =>
-    dbgSend(tabId, "Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 });
+  const mouse = (tabId, type, x, y, buttons = 0) => Promise.race([
+    dbgSend(tabId, "Input.dispatchMouseEvent", { type, x, y, button: "left", buttons, clickCount: 1 }),
+    sleep(MOUSE_TIMEOUT_MS).then(() => {
+      throw new Error("The page did not take the mouse input — is the agent's browser window minimized? Restore it and retry.");
+    }),
+  ]);
+
+  /**
+   * Run a mouse action on a tab that is actually rendered. If the agent's tab
+   * sits behind another tab, bring it to the front. With giveBack, switch to
+   * the user's tab again afterwards — right for drag, whose result stays; not
+   * for hover, because hiding the tab drops the hover (the menu closes again).
+   */
+  async function inFront(tab, giveBack, fn) {
+    if (tab.active) return fn();
+    const [prev] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    await chrome.tabs.update(tab.id, { active: true });
+    await sleep(SHOW_TAB_MS); // let it render a frame
+    try { return { ...(await fn()), broughtToFront: !giveBack }; }
+    finally { if (giveBack && prev) await chrome.tabs.update(prev.id, { active: true }).catch(() => {}); }
+  }
 
   /**
    * Viewport point of an element in the TOP frame. Mouse events are in the top
@@ -737,10 +761,12 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
   async function hover({ ref, selector, tabId }) {
     const tab = await grantedTab(tabId);
-    const p = await pointOf(tab.id, ref, selector, true);
-    return withTempCdp(tab.id, async () => {
-      await mouse(tab.id, "mouseMoved", p.x, p.y);
-      return { ok: true, hovered: p.name };
+    return inFront(tab, false, async () => {
+      const p = await pointOf(tab.id, ref, selector, true);
+      return withTempCdp(tab.id, async () => {
+        await mouse(tab.id, "mouseMoved", p.x, p.y);
+        return { ok: true, hovered: p.name };
+      });
     });
   }
 
@@ -752,6 +778,10 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
    */
   async function drag({ fromRef, fromSelector, toRef, toSelector, tabId }) {
     const tab = await grantedTab(tabId);
+    return inFront(tab, true, () => dragShown(tab, fromRef, fromSelector, toRef, toSelector));
+  }
+
+  async function dragShown(tab, fromRef, fromSelector, toRef, toSelector) {
     const a = await pointOf(tab.id, fromRef, fromSelector, true);
     const b = await pointOf(tab.id, toRef, toSelector, false);
     if (!b.inViewport) throw new Error("The drop target is off-screen while the source is in view — scroll so both are visible, or drag in steps.");
@@ -1037,6 +1067,7 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
 
   // ── popup messages ─────────────────────────────────────────────────────────
   async function handlePopup(msg) {
+    await ready;
     switch (msg.type) {
       case "getState":
         return {
@@ -1162,11 +1193,17 @@ export function createDispatcher({ chrome, WebSocketImpl, userAgent = "", now = 
     if (state.enabled && !state.connected) connect();
   }
 
-  async function init() {
-    await loadSettings();
-    updateBadge();
-    if (state.enabled) { connect(); forEachGranted(showShield); }
-    pushLog("service worker started");
+  // The popup can talk to a freshly started worker before its settings are
+  // loaded; without waiting, loadSettings() would then overwrite the click.
+  let ready = Promise.resolve();
+  function init() {
+    ready = (async () => {
+      await loadSettings();
+      updateBadge();
+      if (state.enabled) { connect(); forEachGranted(showShield); }
+      pushLog("service worker started");
+    })();
+    return ready;
   }
 
   return {
