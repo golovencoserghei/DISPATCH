@@ -151,6 +151,15 @@ async function main() {
   const userToFront = async () => { await fetch(`http://127.0.0.1:${CDP_PORT}/json/activate/${userTab.id}`); await wait(300); };
   const js = async (expr) => JSON.parse((await srv.callTool("browser_eval", { expression: expr })).text);
 
+  // A second Claude session: its own server finds the port taken, joins the hub
+  // and drives the same browser.
+  const second = startServer({ port: MCP_PORT });
+  await wait(1800); await second.initialize();
+  const st2 = JSON.parse((await second.callTool("browser_status")).text);
+  const viaPeer = await second.callTool("browser_eval", { expression: "document.title.length >= 0" });
+  t.check("a second session drives the real browser through the hub", st2.role === "peer" && st2.connected && viaPeer.ok && viaPeer.text === "true", { st2, viaPeer });
+  second.close();
+
   const hv = await srv.callTool("browser_hover", { selector: "#h" });
   t.check("hover: CSS :hover applies", hv.ok && (await js("getComputedStyle(h).backgroundColor")) === "rgb(255, 0, 0)", hv.text);
   if (BACKGROUND) {

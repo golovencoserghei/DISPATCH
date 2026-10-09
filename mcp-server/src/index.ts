@@ -61,9 +61,13 @@ server.registerTool(
       connected: bridge.connected,
       browser: bridge.lastHello,
       port: PORT,
+      // hub = this server holds the port and the extension; peer = it shares
+      // the browser through the hub of another Claude session.
+      role: bridge.role,
       hint: bridge.connected
         ? "Ready. Granted tabs are listed in browser_tabs (granted=true); if there are none, grant access to a tab in the popup."
-        : "Extension not connected. Check that it is installed and the master toggle is on.",
+        : bridge.blockedReason ||
+          "Extension not connected. Check that it is installed and the master toggle is on.",
     }),
 );
 

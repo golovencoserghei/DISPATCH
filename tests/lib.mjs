@@ -1,7 +1,9 @@
 // Shared test helpers: launch the MCP server over stdio, fake extension, check counter.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocket } from "ws";
 
 export const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -15,11 +17,14 @@ const TSX = fileURLToPath(
   ].find((u) => existsSync(fileURLToPath(u))) ?? new URL("../mcp-server/node_modules/.bin/tsx", import.meta.url),
 );
 
+// Servers started by the tests keep their peer secret here, not in ~/.config/dispatch.
+export const STATE_DIR = mkdtempSync(join(tmpdir(), "dispatch-test-state-"));
+
 /** Spawn the MCP server as a child process and talk to it over stdio (JSON-RPC). */
 export function startServer({ port, env } = {}) {
   const srv = spawn(TSX, ["src/index.ts"], {
     cwd: SRV_DIR,
-    env: { ...process.env, ...(port ? { DISPATCH_PORT: String(port) } : {}), ...env },
+    env: { ...process.env, DISPATCH_STATE_DIR: STATE_DIR, ...(port ? { DISPATCH_PORT: String(port) } : {}), ...env },
     stdio: ["pipe", "pipe", "inherit"],
   });
   let buf = ""; const waiters = []; let id = 0;

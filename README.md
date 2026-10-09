@@ -301,8 +301,14 @@ without one.
   JSON-serializable.
 - MV3 service workers may be suspended when idle; the server pings every 15 s
   and the extension reconnects automatically.
-- `EADDRINUSE` on start means another server holds the port — stop it or pick
-  another `DISPATCH_PORT` (and set it in the popup).
+- **Several Claude sessions share one browser.** Each session starts its own
+  server; the first to bind the port is the *hub* and holds the extension, the
+  others join it as *peers* and relay their commands through it. When the hub's
+  session ends, a peer takes over and the extension reconnects within ~2 s.
+  `browser_status` shows `role: "hub" | "peer"`. Peers prove they run as the same
+  OS user with a secret in `~/.config/dispatch/peer.secret` (0600, created
+  automatically). A server from before this version can't share — the new one
+  says so instead of fighting it for the port; close that old session.
 
 ## License
 
