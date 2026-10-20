@@ -12,7 +12,34 @@ const bridge = new Bridge(PORT);
 
 // ../package.json resolves the same from src/ (tsx) and dist/ (published build).
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
-const server = new McpServer({ name: "dispatch", version });
+// Sent to the client in the initialize response. Clients such as Claude Code
+// put it into the model's system prompt, so this is what makes the agent reach
+// for the browser on its own instead of waiting to be told it exists.
+const INSTRUCTIONS = `Dispatch drives the user's own, logged-in Chrome through the Dispatch extension — \
+the tabs the user has granted, with their cookies, sessions and SSO. Use it for ANY task that \
+touches a web page or web app: open a URL, check that a UI change works, reproduce a bug, read a \
+logged-in dashboard, fill a form, take a screenshot, read console errors or network requests. \
+Prefer it over curl, headless browsers or guessing from source — the user installed it so that you \
+would use their real browser.
+
+Workflow:
+1. browser_status — if not connected, tell the user to turn the master switch on or grant a tab in \
+the popup; do not retry blindly.
+2. browser_tabs — granted=true tabs can be used directly (pass tabId) or made current with \
+browser_select_tab; browser_open_tab opens a new tab and grants it.
+3. browser_snapshot gives interactive elements with refs; act with browser_click / browser_type / \
+browser_press_key / browser_scroll / browser_hover / browser_drag by ref or CSS selector; \
+browser_wait_for after navigation.
+4. Observe with browser_screenshot, browser_extract, browser_get_html, browser_eval.
+5. Console and network: call browser_debug_start first, then browser_console_logs / \
+browser_network / browser_network_body; browser_debug_stop when done.
+
+Rules: the user controls access (master switch, host allowlist, read-only mode). An error about a \
+blocked host or read-only mode means ask the user — do not look for a way around it. If an action \
+may open alert/confirm/prompt, pass dialog: "accept" or "dismiss", otherwise the page freezes. \
+If your client defers tool schemas, load all the browser_* tools you will need in one batch.`;
+
+const server = new McpServer({ name: "dispatch", version }, { instructions: INSTRUCTIONS });
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function text(obj: unknown) {
